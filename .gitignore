@@ -1,4 +1,4 @@
-# Zig cache
+# Zig build outputs
 .zig-cache/
 zig-out/
 

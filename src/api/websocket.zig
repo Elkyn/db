@@ -71,6 +71,9 @@ pub const WebSocketConnection = struct {
     pub fn handleAfterHandshake(self: *WebSocketConnection) !void {
         // Main message loop (handshake already done in HTTP server)
         while (true) {
+            // Create arena allocator for this message
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
             const frame = self.readFrame() catch |err| {
                 if (err == error.EndOfStream) break;
                 return err;
@@ -78,8 +81,8 @@ pub const WebSocketConnection = struct {
             
             switch (frame.opcode) {
                 .text => {
-                    const payload = try self.readPayload(frame);
-                    defer self.allocator.free(payload);
+                    // Use arena allocator for payload
+                    const payload = try self.readPayloadWithArena(frame, &arena);
                     
                     try self.handleMessage(payload);
                 },
@@ -92,14 +95,14 @@ pub const WebSocketConnection = struct {
                     break;
                 },
                 .ping => {
-                    const payload = try self.readPayload(frame);
-                    defer self.allocator.free(payload);
+                    // Use arena allocator for payload
+                    const payload = try self.readPayloadWithArena(frame, &arena);
                     
                     try self.sendPong(payload);
                 },
                 .pong => {
                     // Ignore pongs
-                    _ = try self.readPayload(frame);
+                    _ = try self.readPayloadWithArena(frame, &arena);
                 },
                 else => {},
             }
@@ -146,6 +149,37 @@ pub const WebSocketConnection = struct {
         }
         
         return header;
+    }
+    
+    fn readPayloadWithArena(self: *WebSocketConnection, frame: FrameHeader, arena: *std.heap.ArenaAllocator) ![]u8 {
+        return self.readPayloadWithAllocator(frame, arena.allocator());
+    }
+    
+    fn readPayloadWithAllocator(self: *WebSocketConnection, frame: FrameHeader, allocator: std.mem.Allocator) ![]u8 {
+        // Limit payload size to prevent DoS
+        const max_payload_size = 10 * 1024 * 1024; // 10MB
+        if (frame.payload_len > max_payload_size) {
+            return error.PayloadTooLarge;
+        }
+        
+        const payload = try allocator.alloc(u8, frame.payload_len);
+        
+        // Read all data
+        var total_read: usize = 0;
+        while (total_read < frame.payload_len) {
+            const bytes_read = try self.stream.read(payload[total_read..]);
+            if (bytes_read == 0) return error.UnexpectedEndOfStream;
+            total_read += bytes_read;
+        }
+        
+        // Unmask if needed
+        if (frame.masking_key) |mask| {
+            for (payload, 0..) |*byte, i| {
+                byte.* ^= mask[i % 4];
+            }
+        }
+        
+        return payload;
     }
     
     fn readPayload(self: *WebSocketConnection, frame: FrameHeader) ![]u8 {

@@ -3,11 +3,13 @@ const storage_mod = @import("../storage/storage.zig");
 const value_mod = @import("../storage/value.zig");
 const event_emitter_mod = @import("../storage/event_emitter.zig");
 const websocket_mod = @import("websocket.zig");
+const thread_pool_mod = @import("../thread_pool.zig");
 
 const Storage = storage_mod.Storage;
 const Value = value_mod.Value;
 const EventEmitter = event_emitter_mod.EventEmitter;
 const WebSocketConnection = websocket_mod.WebSocketConnection;
+const ThreadPool = thread_pool_mod.ThreadPool;
 
 const log = std.log.scoped(.http);
 
@@ -16,6 +18,7 @@ pub const HttpServer = struct {
     storage: *Storage,
     event_emitter: *EventEmitter,
     server: std.net.Server,
+    thread_pool: ThreadPool,
     
     pub fn init(allocator: std.mem.Allocator, storage: *Storage, event_emitter: *EventEmitter, port: u16) !HttpServer {
         const address = try std.net.Address.parseIp("127.0.0.1", port);
@@ -23,15 +26,21 @@ pub const HttpServer = struct {
             .reuse_address = true,
         });
         
+        // Create thread pool with reasonable number of threads
+        const cpu_count = try std.Thread.getCpuCount();
+        const thread_count = @max(4, @min(cpu_count * 2, 16)); // Between 4 and 16 threads
+        
         return HttpServer{
             .allocator = allocator,
             .storage = storage,
             .event_emitter = event_emitter,
             .server = server,
+            .thread_pool = try ThreadPool.init(allocator, thread_count),
         };
     }
     
     pub fn deinit(self: *HttpServer) void {
+        self.thread_pool.deinit();
         self.server.deinit();
     }
     
@@ -48,17 +57,41 @@ pub const HttpServer = struct {
                 return err;
             };
             
-            // Handle each connection in a new thread
-            const thread = try std.Thread.spawn(.{}, handleConnection, .{
-                self,
-                connection,
+            // Submit connection to thread pool
+            const ctx = try self.allocator.create(ConnectionContext);
+            ctx.* = .{
+                .server = self,
+                .connection = connection,
+            };
+            
+            try self.thread_pool.submit(.{
+                .callback = handleConnectionWrapper,
+                .context = ctx,
             });
-            thread.detach();
         }
+    }
+    
+    const ConnectionContext = struct {
+        server: *HttpServer,
+        connection: std.net.Server.Connection,
+    };
+    
+    fn handleConnectionWrapper(context: *anyopaque) void {
+        const ctx = @as(*ConnectionContext, @ptrCast(@alignCast(context)));
+        defer ctx.server.allocator.destroy(ctx);
+        
+        handleConnection(ctx.server, ctx.connection) catch |err| {
+            log.err("Error handling connection: {}", .{err});
+        };
     }
     
     fn handleConnection(server: *HttpServer, connection: std.net.Server.Connection) !void {
         defer connection.stream.close();
+        
+        // Create arena allocator for this request
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
         
         // Read initial request header (should be enough for most headers)
         var header_buf: [8192]u8 = undefined;
@@ -87,7 +120,7 @@ pub const HttpServer = struct {
         // Allocate buffer for full request if needed
         var request_data: []u8 = undefined;
         var allocated = false;
-        defer if (allocated) server.allocator.free(request_data);
+        // No need to free - arena will handle it
         
         if (content_length) |cl| {
             const header_end_pos = header_end.? + if (std.mem.indexOf(u8, header_buf[0..initial_read], "\r\n\r\n") != null) 4 else 2;
@@ -101,8 +134,8 @@ pub const HttpServer = struct {
             }
             
             if (total_size > header_buf.len) {
-                // Need to allocate larger buffer
-                request_data = try server.allocator.alloc(u8, total_size);
+                // Need to allocate larger buffer using arena
+                request_data = try arena_allocator.alloc(u8, total_size);
                 allocated = true;
                 @memcpy(request_data[0..initial_read], header_buf[0..initial_read]);
                 
@@ -165,9 +198,9 @@ pub const HttpServer = struct {
         };
         defer value.deinit(server.allocator);
         
-        // Convert to JSON
-        const json = try value.toJson(server.allocator);
-        defer server.allocator.free(json);
+        // Convert to JSON using arena allocator
+        const json = try value.toJson(arena_allocator);
+        // No need to free - arena will clean up
         
         try sendJsonResponse(connection, 200, "OK", json);
     }
