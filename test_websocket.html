@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Elkyn DB WebSocket Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #log {
+            background: #f0f0f0;
+            padding: 10px;
+            height: 400px;
+            overflow-y: auto;
+            margin: 20px 0;
+            white-space: pre-wrap;
+        }
+        button {
+            margin: 5px;
+            padding: 5px 10px;
+        }
+        input {
+            width: 300px;
+            margin: 5px;
+            padding: 5px;
+        }
+        .connected {
+            color: green;
+        }
+        .disconnected {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1>Elkyn DB WebSocket Test Client</h1>
+    
+    <div>
+        Status: <span id="status" class="disconnected">Disconnected</span>
+    </div>
+    
+    <div>
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+    </div>
+    
+    <div>
+        <h3>Subscribe</h3>
+        <input id="subscribePath" value="/" placeholder="Path to subscribe">
+        <label>
+            <input type="checkbox" id="includeChildren" checked> Include children
+        </label>
+        <button onclick="subscribe()">Subscribe</button>
+    </div>
+    
+    <div>
+        <h3>Get Value</h3>
+        <input id="getPath" value="/test" placeholder="Path to get">
+        <button onclick="getValue()">Get</button>
+    </div>
+    
+    <div>
+        <h3>Log</h3>
+        <button onclick="clearLog()">Clear</button>
+        <div id="log"></div>
+    </div>
+    
+    <script>
+        let ws = null;
+        
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toISOString().substr(11, 12);
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function updateStatus(connected) {
+            const status = document.getElementById('status');
+            if (connected) {
+                status.textContent = 'Connected';
+                status.className = 'connected';
+            } else {
+                status.textContent = 'Disconnected';
+                status.className = 'disconnected';
+            }
+        }
+        
+        function connect() {
+            if (ws) {
+                log('Already connected');
+                return;
+            }
+            
+            try {
+                ws = new WebSocket('ws://localhost:9000/ws');
+                
+                ws.onopen = function() {
+                    log('Connected to Elkyn DB');
+                    updateStatus(true);
+                };
+                
+                ws.onmessage = function(event) {
+                    log('< ' + event.data);
+                    
+                    try {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'event') {
+                            log(`  Event: ${msg.event_type} at ${msg.path}`);
+                        }
+                    } catch (e) {
+                        // Not JSON, ignore
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    log('Error: ' + error);
+                };
+                
+                ws.onclose = function() {
+                    log('Disconnected');
+                    updateStatus(false);
+                    ws = null;
+                };
+            } catch (error) {
+                log('Failed to connect: ' + error);
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function subscribe() {
+            if (!ws) {
+                log('Not connected');
+                return;
+            }
+            
+            const path = document.getElementById('subscribePath').value;
+            const includeChildren = document.getElementById('includeChildren').checked;
+            
+            const msg = {
+                type: 'subscribe',
+                path: path,
+                include_children: includeChildren
+            };
+            
+            log('> ' + JSON.stringify(msg));
+            ws.send(JSON.stringify(msg));
+        }
+        
+        function getValue() {
+            if (!ws) {
+                log('Not connected');
+                return;
+            }
+            
+            const path = document.getElementById('getPath').value;
+            const msg = {
+                type: 'get',
+                path: path
+            };
+            
+            log('> ' + JSON.stringify(msg));
+            ws.send(JSON.stringify(msg));
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // Auto-connect on load
+        window.onload = function() {
+            log('Elkyn DB WebSocket Test Client');
+            log('Click Connect to start');
+        };
+    </script>
+</body>
+</html>

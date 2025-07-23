@@ -1,0 +1,23 @@
+# Zig cache
+.zig-cache/
+zig-out/
+
+# LMDB data files
+data/
+
+# macOS
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Test temporary directories
+/tmp/
+test-tmp/
+
+# Object files
+*.o
