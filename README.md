@@ -48,14 +48,14 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 - [x] Live subscription demo with multiple watchers
 - [x] Event log showing all real-time updates
 
-### Phase 4: Authentication & Rules Engine 🔒
+### Phase 4: Authentication & Rules Engine ✅
 - [x] JWT token validation (HS256)
 - [x] Token generation endpoint for testing
 - [x] Auth context in request handlers
 - [x] Web UI authentication integration
-- [ ] Rule parser and compiler
-- [ ] Rule evaluation engine (comptime optimized)
-- [ ] Path variable substitution ($userId, etc)
+- [x] Rule parser and compiler
+- [x] Rule evaluation engine with cascading
+- [x] Path variable substitution ($userId, etc)
 - [ ] Cross-reference resolution (root.path.to.data)
 - [x] Unit tests for auth
 
@@ -77,23 +77,42 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 
 ## Quick Start
 
+### Server Mode (@elkyn/realtime-db)
+
 ```bash
-# Build from source
+# Build and run server
 zig build -Doptimize=ReleaseFast
-
-# Run the server
-./zig-out/bin/elkyn-server 9000 ./data
-
-# Or with default settings (port 8080, ./data directory)
-./zig-out/bin/elkyn-server
-
-# Run with authentication enabled
-./zig-out/bin/elkyn-server 9000 ./data my-secret-key
-# Or with required authentication
-./zig-out/bin/elkyn-server 9000 ./data my-secret-key require
+./start.sh
 
 # Access the web dashboard
-open http://localhost:9000/index.html
+open http://localhost:8889/index.html
+```
+
+### Embedded Mode (@elkyn/store)
+
+```bash
+# Build Node.js bindings
+./build_nodejs.sh
+
+# Use in your Node.js app
+cd nodejs-bindings
+npm test
+```
+
+```javascript
+const { ElkynStore } = require('@elkyn/store');
+
+const store = new ElkynStore('./data');
+store.enableAuth('secret');
+store.setupDefaultRules();
+
+const token = store.createToken('user123');
+store.set('/users/user123/profile', { name: 'Alice' }, token);
+
+const profile = store.get('/users/user123/profile', token);
+console.log(profile); // { name: 'Alice' }
+
+store.close();
 ```
 
 ## Example Usage

@@ -1,4 +1,5 @@
 const std = @import("std");
+const msgpack_mod = @import("msgpack.zig");
 
 /// Represents all possible value types in the database
 pub const Value = union(enum) {
@@ -112,6 +113,16 @@ pub const Value = union(enum) {
                 break :blk Value{ .array = new_arr };
             },
         };
+    }
+
+    /// Serialize value to MessagePack bytes
+    pub fn toMsgPack(self: Value, allocator: std.mem.Allocator) ![]const u8 {
+        return try msgpack_mod.MessagePack.serialize(allocator, self);
+    }
+    
+    /// Parse MessagePack bytes into a Value
+    pub fn fromMsgPack(allocator: std.mem.Allocator, data: []const u8) !Value {
+        return try msgpack_mod.MessagePack.deserialize(allocator, data);
     }
 
     /// Clone a value (deep copy)

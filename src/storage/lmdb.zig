@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("lmdb.h");
 });
+const constants = @import("../constants.zig");
 
 const log = std.log.scoped(.lmdb);
 
@@ -47,11 +48,11 @@ pub const Environment = struct {
         errdefer _ = c.mdb_env_close(env);
 
         // Set max databases (we'll use named databases for different trees)
-        rc = c.mdb_env_set_maxdbs(env, 10);
+        rc = c.mdb_env_set_maxdbs(env, constants.LMDB_MAX_DBS);
         if (rc != 0) return error.InitFailed;
 
-        // Set map size (1GB for now, can be increased)
-        const map_size: usize = 1024 * 1024 * 1024;
+        // Set map size
+        const map_size: usize = constants.LMDB_MAP_SIZE;
         rc = c.mdb_env_set_mapsize(env, map_size);
         if (rc != 0) return error.InitFailed;
 

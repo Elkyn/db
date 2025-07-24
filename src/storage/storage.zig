@@ -152,12 +152,12 @@ pub const Storage = struct {
                 try db.put(path, array_meta);
             },
             else => {
-                // For primitive values, store directly
+                // For primitive values, store directly using MessagePack
                 var value_copy = value;
-                const json = try value_copy.toJson(self.allocator);
-                defer self.allocator.free(json);
+                const msgpack = try value_copy.toMsgPack(self.allocator);
+                defer self.allocator.free(msgpack);
                 
-                try db.put(path, json);
+                try db.put(path, msgpack);
             }
         }
     }
@@ -198,8 +198,8 @@ pub const Storage = struct {
             return try self.reconstructArray(&db, normalized, len);
         }
 
-        // Otherwise, deserialize JSON to Value
-        return Value.fromJson(self.allocator, data) catch return error.DeserializationFailed;
+        // Otherwise, deserialize MessagePack to Value
+        return Value.fromMsgPack(self.allocator, data) catch return error.DeserializationFailed;
     }
 
     fn reconstructObject(self: *Storage, db: *lmdb.Database, path: []const u8) StorageError!Value {
@@ -297,8 +297,8 @@ pub const Storage = struct {
             const len = std.fmt.parseInt(usize, len_str, 10) catch return error.DeserializationFailed;
             return try self.reconstructArray(db, key, len);
         } else {
-            // Parse as JSON value
-            return Value.fromJson(self.allocator, value) catch return error.DeserializationFailed;
+            // Parse as MessagePack value
+            return Value.fromMsgPack(self.allocator, value) catch return error.DeserializationFailed;
         }
     }
 
@@ -313,7 +313,7 @@ pub const Storage = struct {
             defer self.allocator.free(index_path);
             
             const data = try db.get(index_path);
-            const value = Value.fromJson(self.allocator, data) catch return error.DeserializationFailed;
+            const value = Value.fromMsgPack(self.allocator, data) catch return error.DeserializationFailed;
             try arr.append(value);
         }
         

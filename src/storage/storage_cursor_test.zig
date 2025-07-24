@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const Storage = @import("storage.zig").Storage;
 const Value = @import("value.zig").Value;
+const constants = @import("../constants.zig");
 
 test "storage: cursor optimization for large datasets" {
     const allocator = testing.allocator;
@@ -18,14 +19,14 @@ test "storage: cursor optimization for large datasets" {
     
     // Create a large dataset with many paths
     // Structure:
-    // /users/1 through /users/1000
-    // /products/1 through /products/1000
-    // /orders/1 through /orders/1000
+    // /users/1 through /users/{TEST_USER_COUNT}
+    // /products/1 through /products/{TEST_USER_COUNT}
+    // /orders/1 through /orders/{TEST_USER_COUNT}
     
     var timer = try std.time.Timer.start();
     
     // Insert test data
-    for (0..1000) |i| {
+    for (0..constants.TEST_USER_COUNT) |i| {
         const user_path = try std.fmt.allocPrint(allocator, "/users/{d}", .{i});
         defer allocator.free(user_path);
         var user_value = Value{ .string = try std.fmt.allocPrint(allocator, "User {d}", .{i}) };
@@ -46,7 +47,7 @@ test "storage: cursor optimization for large datasets" {
     }
     
     const insert_time = timer.read();
-    std.log.info("Inserted 3000 items in {d}ms", .{insert_time / std.time.ns_per_ms});
+    std.log.info("Inserted {} items in {d}ms", .{constants.TEST_USER_COUNT * 3, insert_time / std.time.ns_per_ms});
     
     // Test 1: Get /users object (should only scan users, not products/orders)
     timer.reset();
@@ -55,8 +56,8 @@ test "storage: cursor optimization for large datasets" {
     const users_time = timer.read();
     
     try testing.expect(users_obj == .object);
-    try testing.expectEqual(@as(usize, 1000), users_obj.object.count());
-    std.log.info("Retrieved /users object with 1000 children in {d}ms", .{users_time / std.time.ns_per_ms});
+    try testing.expectEqual(@as(usize, constants.TEST_USER_COUNT), users_obj.object.count());
+    std.log.info("Retrieved /users object with {} children in {d}ms", .{constants.TEST_USER_COUNT, users_time / std.time.ns_per_ms});
     
     // Test 2: Get /products object
     timer.reset();
@@ -65,8 +66,8 @@ test "storage: cursor optimization for large datasets" {
     const products_time = timer.read();
     
     try testing.expect(products_obj == .object);
-    try testing.expectEqual(@as(usize, 1000), products_obj.object.count());
-    std.log.info("Retrieved /products object with 1000 children in {d}ms", .{products_time / std.time.ns_per_ms});
+    try testing.expectEqual(@as(usize, constants.TEST_USER_COUNT), products_obj.object.count());
+    std.log.info("Retrieved /products object with {} children in {d}ms", .{constants.TEST_USER_COUNT, products_time / std.time.ns_per_ms});
     
     // Test 3: Get root object (should efficiently handle all 3 categories)
     timer.reset();
@@ -101,7 +102,7 @@ test "storage: cursor seek optimization with deep nesting" {
     
     // Create siblings at each level
     for (levels, 0..) |_, depth| {
-        var path_buf: [256]u8 = undefined;
+        var path_buf: [constants.PATH_BUFFER_SIZE]u8 = undefined;
         var path_len: usize = 1;
         path_buf[0] = '/';
         
@@ -119,7 +120,7 @@ test "storage: cursor seek optimization with deep nesting" {
         const base_path = path_buf[0..path_len];
         
         // Add siblings
-        for (0..10) |sibling| {
+        for (0..constants.TEST_SIBLING_COUNT) |sibling| {
             const sibling_path = try std.fmt.allocPrint(allocator, "{s}_{d}", .{ base_path, sibling });
             defer allocator.free(sibling_path);
             
@@ -138,7 +139,7 @@ test "storage: cursor seek optimization with deep nesting" {
     const a_time = timer.read();
     
     try testing.expect(a_obj == .object);
-    try testing.expectEqual(@as(usize, 11), a_obj.object.count()); // 'b' + 10 siblings
+    try testing.expectEqual(@as(usize, constants.TEST_SIBLING_COUNT + 1), a_obj.object.count()); // 'b' + siblings
     std.log.info("Retrieved /a object in {d}μs", .{a_time / std.time.ns_per_us});
     
     // Log the time for manual analysis but don't assert on it

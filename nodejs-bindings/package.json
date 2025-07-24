@@ -1,0 +1,50 @@
+{
+  "name": "@elkyn/store",
+  "version": "0.1.0",
+  "description": "Embedded real-time tree database with security rules",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "test": "node test.js",
+    "install": "node-gyp rebuild"
+  },
+  "keywords": [
+    "database",
+    "realtime",
+    "embedded",
+    "tree",
+    "firebase",
+    "lmdb",
+    "rules"
+  ],
+  "author": "Elkyn Team",
+  "license": "MIT",
+  "dependencies": {
+    "napi-macros": "^2.2.2",
+    "node-gyp": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elkyn/db"
+  },
+  "homepage": "https://github.com/elkyn/db#readme",
+  "bugs": {
+    "url": "https://github.com/elkyn/db/issues"
+  }
+}

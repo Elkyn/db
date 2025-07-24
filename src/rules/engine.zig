@@ -7,6 +7,7 @@ const RuleEvaluator = @import("evaluator.zig").RuleEvaluator;
 const AuthContext = @import("../auth/context.zig").AuthContext;
 const Storage = @import("../storage/storage.zig").Storage;
 const Value = @import("../storage/value.zig").Value;
+const constants = @import("../constants.zig");
 
 const log = std.log.scoped(.rules_engine);
 
@@ -49,7 +50,7 @@ pub const RulesEngine = struct {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
         
-        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024); // 1MB max
+        const content = try file.readToEndAlloc(self.allocator, constants.MAX_RULES_FILE_SIZE);
         defer self.allocator.free(content);
         
         try self.loadRules(content);
@@ -80,9 +81,8 @@ pub const RulesEngine = struct {
         
         // Get existing data for the path
         if (self.storage.get(path)) |val| {
-            var value = val;
-            context.data = value;
-            defer value.deinit(self.allocator);
+            // Clone the value so it persists for the context lifetime
+            context.data = try val.clone(self.allocator);
         } else |_| {
             // Path doesn't exist yet
             context.data = null;

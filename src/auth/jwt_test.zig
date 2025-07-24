@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const JWT = @import("jwt.zig").JWT;
 const Claims = @import("jwt.zig").Claims;
+const constants = @import("../constants.zig");
 
 test "JWT: create and validate token" {
     const allocator = testing.allocator;
@@ -13,7 +14,7 @@ test "JWT: create and validate token" {
         .uid = "user123",
         .email = "test@example.com",
         .iat = std.time.timestamp(),
-        .exp = std.time.timestamp() + 3600, // 1 hour from now
+        .exp = std.time.timestamp() + constants.JWT_DEFAULT_EXPIRY_SECONDS,
     };
     
     // Create token
@@ -59,7 +60,7 @@ test "JWT: expired token" {
     // Create expired token
     const claims = Claims{
         .uid = "user123",
-        .exp = std.time.timestamp() - 3600, // 1 hour ago
+        .exp = std.time.timestamp() - constants.JWT_DEFAULT_EXPIRY_SECONDS, // expired
     };
     
     const token = try jwt.create(claims);

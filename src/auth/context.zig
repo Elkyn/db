@@ -39,6 +39,13 @@ pub const AuthContext = struct {
         if (self.uid) |uid| allocator.free(uid);
         if (self.email) |email| allocator.free(email);
         if (self.token) |token| allocator.free(token);
-        // TODO: free roles array
+        
+        // Free each role string and the array itself
+        for (self.roles) |role| {
+            allocator.free(role);
+        }
+        if (self.roles.len > 0) {
+            allocator.free(self.roles);
+        }
     }
 };

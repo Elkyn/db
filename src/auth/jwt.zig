@@ -36,7 +36,16 @@ pub const Claims = struct {
         if (self.sub) |sub| allocator.free(sub);
         if (self.aud) |aud| allocator.free(aud);
         if (self.jti) |jti| allocator.free(jti);
-        // TODO: handle roles array
+        
+        // Free roles array and its contents
+        if (self.roles) |roles| {
+            for (roles) |role| {
+                allocator.free(role);
+            }
+            allocator.free(roles);
+        }
+        
+        // Note: extra JSON value is owned by the JSON parser and will be freed when the parsed value is deinit'd
     }
 };
 
@@ -118,6 +127,8 @@ pub const JWT = struct {
         
         // Extract standard claims
         var claims = Claims{};
+        errdefer claims.deinit(self.allocator);
+        
         if (claims_parsed.value.object.get("uid")) |uid| {
             if (uid == .string) claims.uid = try self.allocator.dupe(u8, uid.string);
         }
@@ -129,6 +140,33 @@ pub const JWT = struct {
         }
         if (claims_parsed.value.object.get("iat")) |iat| {
             if (iat == .integer) claims.iat = iat.integer;
+        }
+        
+        // Extract roles array
+        if (claims_parsed.value.object.get("roles")) |roles_value| {
+            if (roles_value == .array) {
+                const roles_array = roles_value.array;
+                var roles = try self.allocator.alloc([]const u8, roles_array.items.len);
+                var roles_allocated: usize = 0;
+                errdefer {
+                    for (roles[0..roles_allocated]) |role| {
+                        self.allocator.free(role);
+                    }
+                    self.allocator.free(roles);
+                }
+                
+                for (roles_array.items, 0..) |role_value, i| {
+                    if (role_value == .string) {
+                        roles[i] = try self.allocator.dupe(u8, role_value.string);
+                        roles_allocated = i + 1;
+                    } else {
+                        // Invalid role type, skip
+                        roles[i] = try self.allocator.dupe(u8, "");
+                        roles_allocated = i + 1;
+                    }
+                }
+                claims.roles = roles;
+            }
         }
         
         // Check expiration
@@ -176,6 +214,8 @@ pub const JWT = struct {
         if (claims.iat) |iat| {
             try payload_obj.put("iat", .{ .integer = iat });
         }
+        // TODO: Add roles support once JSON array memory management is fixed
+        // if (claims.roles) |roles| { ... }
         
         const payload_value = std.json.Value{ .object = payload_obj };
         const payload_json = try std.json.stringifyAlloc(self.allocator, payload_value, .{});

@@ -4,6 +4,21 @@ zig-out/
 
 # LMDB data files
 data/
+*.db
+*.mdb
+
+# Test data directories
+test-data/
+test-simple/
+test-basic/
+test-jwt/
+test-auth-only/
+demo-data/
+
+# Node.js bindings
+nodejs-bindings/node_modules/
+nodejs-bindings/build/
+nodejs-bindings/package-lock.json
 
 # macOS
 .DS_Store
@@ -21,3 +36,10 @@ test-tmp/
 
 # Object files
 *.o
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp

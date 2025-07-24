@@ -17,6 +17,13 @@ pub const RuleEvaluator = struct {
     
     /// Evaluate if an operation is allowed
     pub fn evaluate(self: *RuleEvaluator, config: *const RulesConfig, rule_type: RuleType, context: *RuleContext) !bool {
+        log.debug("Evaluating {s} access for path: {s}, auth.uid: {?s}, authenticated: {}", .{
+            @tagName(rule_type),
+            context.path,
+            context.auth.uid,
+            context.auth.authenticated,
+        });
+        
         // Split the path into segments
         var segments = std.ArrayList([]const u8).init(self.allocator);
         defer segments.deinit();
@@ -39,6 +46,19 @@ pub const RuleEvaluator = struct {
         segments: []const []const u8,
         depth: usize,
     ) !bool {
+        return try self.evaluatePathWithCascade(rules, rule_type, context, segments, depth, null);
+    }
+    
+    /// Internal evaluation with cascade support
+    fn evaluatePathWithCascade(
+        self: *RuleEvaluator,
+        rules: *const PathRules,
+        rule_type: RuleType,
+        context: *RuleContext,
+        segments: []const []const u8,
+        depth: usize,
+        cascade_rule: ?Rule,
+    ) !bool {
         // Get the rule for this level
         const rule = switch (rule_type) {
             .read => rules.read,
@@ -47,9 +67,15 @@ pub const RuleEvaluator = struct {
             .index => null, // TODO: implement index rules
         };
         
+        // Update cascade rule if we have one at this level
+        const effective_cascade = if (rule) |r| r else cascade_rule;
+        
         // If we're at the target depth, evaluate the rule
         if (depth == segments.len) {
             if (rule) |r| {
+                return try self.evaluateExpression(r.expression, context);
+            } else if (effective_cascade) |r| {
+                // Use cascaded rule from parent
                 return try self.evaluateExpression(r.expression, context);
             }
             // No rule means deny by default
@@ -62,7 +88,7 @@ pub const RuleEvaluator = struct {
         // First check for exact match
         if (rules.children.count() > 0) {
             if (rules.children.get(segment)) |child| {
-                return try self.evaluatePath(&child, rule_type, context, segments, depth + 1);
+                return try self.evaluatePathWithCascade(&child, rule_type, context, segments, depth + 1, effective_cascade);
             }
         }
         
@@ -70,13 +96,17 @@ pub const RuleEvaluator = struct {
         var child_iter = rules.children.iterator();
         while (child_iter.next()) |entry| {
             const pattern = entry.key_ptr.*;
+            // Defensive checks to prevent segfault
+            if (pattern.len == 0) continue;
+            if (@intFromPtr(pattern.ptr) == 0) continue;
+            
             if (std.mem.startsWith(u8, pattern, "$")) {
                 // This is a variable pattern - extract the variable
                 const var_name = pattern[1..];
                 try context.variables.put(var_name, segment);
                 
                 // Continue evaluation with this path
-                const allowed = try self.evaluatePath(entry.value_ptr, rule_type, context, segments, depth + 1);
+                const allowed = try self.evaluatePathWithCascade(entry.value_ptr, rule_type, context, segments, depth + 1, effective_cascade);
                 
                 // Clean up the variable
                 _ = context.variables.remove(var_name);
@@ -85,8 +115,8 @@ pub const RuleEvaluator = struct {
             }
         }
         
-        // Check if there's a rule at this level that should cascade
-        if (rule) |r| {
+        // Check if we have a cascade rule from parent
+        if (effective_cascade) |r| {
             return try self.evaluateExpression(r.expression, context);
         }
         
@@ -155,7 +185,10 @@ pub const RuleEvaluator = struct {
         defer self.allocator.free(left_val);
         defer self.allocator.free(right_val);
         
-        return std.mem.eql(u8, left_val, right_val);
+        const result = std.mem.eql(u8, left_val, right_val);
+        log.debug("Comparison: '{s}' === '{s}' = {}", .{left_val, right_val, result});
+        
+        return result;
     }
     
     /// Resolve a value reference to a string
@@ -187,8 +220,10 @@ pub const RuleEvaluator = struct {
         if (std.mem.startsWith(u8, ref, "$")) {
             const var_name = ref[1..];
             if (context.getVariable(var_name)) |val| {
+                log.debug("Variable ${s} = '{s}'", .{var_name, val});
                 return try self.allocator.dupe(u8, val);
             }
+            log.debug("Variable ${s} not found", .{var_name});
             return try self.allocator.dupe(u8, "null");
         }
         

@@ -4,6 +4,7 @@ const Value = @import("../storage/value.zig").Value;
 const SSEManager = @import("../realtime/sse_manager.zig").SSEManager;
 const JWT = @import("../auth/jwt.zig").JWT;
 const AuthContext = @import("../auth/context.zig").AuthContext;
+const constants = @import("../constants.zig");
 
 const log = std.log.scoped(.simple_http);
 
@@ -17,9 +18,10 @@ pub const SimpleHttpServer = struct {
     jwt: ?JWT = null,
     require_auth: bool = false,
     rules_engine: ?@import("../rules/engine.zig").RulesEngine = null,
+    allow_token_generation: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, storage: *Storage, port: u16) !SimpleHttpServer {
-        const address = try std.net.Address.parseIp("127.0.0.1", port);
+        const address = try std.net.Address.parseIp(constants.SERVER_ADDRESS, port);
         var server = try address.listen(.{
             .reuse_address = true,
         });
@@ -55,6 +57,13 @@ pub const SimpleHttpServer = struct {
         log.info("Authentication enabled (required: {})", .{require});
     }
     
+    pub fn setAllowTokenGeneration(self: *SimpleHttpServer, allow: bool) void {
+        self.allow_token_generation = allow;
+        if (allow) {
+            log.warn("WARNING: Open token generation enabled - THIS IS INSECURE AND SHOULD ONLY BE USED FOR DEVELOPMENT", .{});
+        }
+    }
+    
     pub fn enableRules(self: *SimpleHttpServer, rules_json: []const u8) !void {
         const RulesEngine = @import("../rules/engine.zig").RulesEngine;
         self.rules_engine = RulesEngine.init(self.allocator, self.storage);
@@ -81,7 +90,7 @@ pub const SimpleHttpServer = struct {
     
     fn heartbeatLoop(self: *SimpleHttpServer) void {
         while (true) {
-            std.time.sleep(30 * std.time.ns_per_s);
+            std.time.sleep(constants.HEARTBEAT_INTERVAL_NS);
             self.sse_manager.sendHeartbeats();
         }
     }
@@ -125,13 +134,44 @@ pub const SimpleHttpServer = struct {
                     defer result.deinit(self.allocator);
                     
                     if (result.valid) {
-                        return AuthContext{
+                        var auth = AuthContext{
                             .authenticated = true,
-                            .uid = if (result.claims.uid) |uid| try self.allocator.dupe(u8, uid) else null,
-                            .email = if (result.claims.email) |email| try self.allocator.dupe(u8, email) else null,
+                            .uid = null,
+                            .email = null,
                             .exp = result.claims.exp,
-                            .token = try self.allocator.dupe(u8, token),
+                            .token = null,
+                            .roles = &.{},
                         };
+                        errdefer auth.deinit(self.allocator);
+                        
+                        // Copy strings with proper error handling
+                        if (result.claims.uid) |uid| {
+                            auth.uid = try self.allocator.dupe(u8, uid);
+                        }
+                        if (result.claims.email) |email| {
+                            auth.email = try self.allocator.dupe(u8, email);
+                        }
+                        auth.token = try self.allocator.dupe(u8, token);
+                        
+                        // Copy roles array
+                        if (result.claims.roles) |roles| {
+                            var auth_roles = try self.allocator.alloc([]const u8, roles.len);
+                            var roles_allocated: usize = 0;
+                            errdefer {
+                                for (auth_roles[0..roles_allocated]) |role| {
+                                    self.allocator.free(role);
+                                }
+                                self.allocator.free(auth_roles);
+                            }
+                            
+                            for (roles, 0..) |role, i| {
+                                auth_roles[i] = try self.allocator.dupe(u8, role);
+                                roles_allocated = i + 1;
+                            }
+                            auth.roles = auth_roles;
+                        }
+                        
+                        return auth;
                     }
                 }
             }
@@ -145,7 +185,7 @@ pub const SimpleHttpServer = struct {
         defer if (should_close) connection.stream.close();
         
         // Read request
-        var buffer: [4096]u8 = undefined;
+        var buffer: [constants.HTTP_REQUEST_BUFFER_SIZE]u8 = undefined;
         const bytes_read = try connection.stream.read(&buffer);
         
         if (bytes_read == 0) return;
@@ -171,12 +211,15 @@ pub const SimpleHttpServer = struct {
         const is_browser = std.mem.indexOf(u8, request, "Accept: text/html") != null;
         if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/") and is_browser) {
             // Redirect browser to dashboard
-            const redirect = 
-                "HTTP/1.1 302 Found\r\n" ++
+            var redirect_buf: [256]u8 = undefined;
+            const redirect = try std.fmt.bufPrint(&redirect_buf,
+                "HTTP/1.1 {d} Found\r\n" ++
                 "Location: /index.html\r\n" ++
                 "Content-Length: 0\r\n" ++
                 "Connection: close\r\n" ++
-                "\r\n";
+                "\r\n",
+                .{constants.HTTP_FOUND}
+            );
             _ = try connection.stream.write(redirect);
             return;
         }
@@ -190,7 +233,7 @@ pub const SimpleHttpServer = struct {
         // Check authentication for protected endpoints
         if (self.require_auth and !isStaticFileRequest(path) and !std.mem.eql(u8, path, "/")) {
             if (!auth.isAuthenticated()) {
-                try self.sendResponse(connection, 401, "Unauthorized", "Authentication required");
+                try self.sendResponse(connection, constants.HTTP_UNAUTHORIZED, "Unauthorized", "Authentication required");
                 return;
             }
         }
@@ -217,29 +260,40 @@ pub const SimpleHttpServer = struct {
             try self.handlePut(connection, path, request, auth);
         } else if (std.mem.eql(u8, method, "DELETE")) {
             try self.handleDelete(connection, path, auth);
+        } else if (std.mem.eql(u8, method, "OPTIONS")) {
+            // Handle CORS preflight
+            try self.handleOptions(connection);
         } else {
-            try self.sendResponse(connection, 405, "Method Not Allowed", "");
+            try self.sendResponse(connection, constants.HTTP_METHOD_NOT_ALLOWED, "Method Not Allowed", "");
         }
     }
     
     fn handleGet(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
-        // Check rules if enabled
-        if (self.rules_engine) |*engine| {
-            const allowed = engine.canRead(path, &auth) catch |err| {
-                log.err("Error evaluating read rules: {}", .{err});
-                try self.sendResponse(connection, 500, "Internal Server Error", "");
-                return;
-            };
-            
-            if (!allowed) {
-                try self.sendResponse(connection, 403, "Forbidden", "Access denied");
-                return;
+        // Skip rules check for static files and system paths
+        const skip_rules = isStaticFileRequest(path) or 
+                          std.mem.startsWith(u8, path, "/.well-known/") or
+                          std.mem.startsWith(u8, path, "/.git/") or
+                          std.mem.startsWith(u8, path, "/favicon.ico");
+        
+        if (!skip_rules) {
+            // Check rules if enabled
+            if (self.rules_engine) |*engine| {
+                const allowed = engine.canRead(path, &auth) catch |err| {
+                    log.err("Error evaluating read rules: {}", .{err});
+                    try self.sendResponse(connection, constants.HTTP_INTERNAL_SERVER_ERROR, "Internal Server Error", "");
+                    return;
+                };
+                
+                if (!allowed) {
+                    try self.sendResponse(connection, constants.HTTP_FORBIDDEN, "Forbidden", "Access denied");
+                    return;
+                }
             }
         }
         
         var value = self.storage.get(path) catch |err| {
             if (err == error.NotFound) {
-                try self.sendResponse(connection, 404, "Not Found", "");
+                try self.sendResponse(connection, constants.HTTP_NOT_FOUND, "Not Found", "");
                 return;
             }
             log.err("Error getting path {s}: {}", .{path, err});
@@ -255,13 +309,13 @@ pub const SimpleHttpServer = struct {
         };
         defer self.allocator.free(json);
         
-        try self.sendJsonResponse(connection, 200, "OK", json);
+        try self.sendJsonResponse(connection, constants.HTTP_OK, "OK", json);
     }
     
     fn handlePut(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, request: []const u8, auth: AuthContext) !void {
         // Find body
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse std.mem.indexOf(u8, request, "\n\n") orelse {
-            try self.sendResponse(connection, 400, "Bad Request", "");
+            try self.sendResponse(connection, constants.HTTP_BAD_REQUEST, "Bad Request", "");
             return;
         };
         
@@ -275,7 +329,7 @@ pub const SimpleHttpServer = struct {
         // Parse JSON
         var value = Value.fromJson(self.allocator, body) catch |err| {
             log.err("JSON parse error: {}, body: '{s}'", .{err, body});
-            try self.sendResponse(connection, 400, "Bad Request", "Invalid JSON");
+            try self.sendResponse(connection, constants.HTTP_BAD_REQUEST, "Bad Request", "Invalid JSON");
             return;
         };
         defer value.deinit(self.allocator);
@@ -300,7 +354,7 @@ pub const SimpleHttpServer = struct {
             return;
         };
         
-        try self.sendResponse(connection, 200, "OK", "");
+        try self.sendResponse(connection, constants.HTTP_OK, "OK", "");
     }
     
     fn handleDelete(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
@@ -320,22 +374,22 @@ pub const SimpleHttpServer = struct {
         
         self.storage.delete(path) catch |err| {
             if (err == error.NotFound) {
-                try self.sendResponse(connection, 404, "Not Found", "");
+                try self.sendResponse(connection, constants.HTTP_NOT_FOUND, "Not Found", "");
                 return;
             }
             try self.sendResponse(connection, 500, "Internal Server Error", "");
             return;
         };
         
-        try self.sendResponse(connection, 200, "OK", "");
+        try self.sendResponse(connection, constants.HTTP_OK, "OK", "");
     }
     
     fn sendResponse(self: *SimpleHttpServer, connection: std.net.Server.Connection, status: u16, status_text: []const u8, body: []const u8) !void {
         _ = self;
-        var header_buf: [512]u8 = undefined;
+        var header_buf: [constants.HTTP_HEADER_BUFFER_SIZE]u8 = undefined;
         const headers = try std.fmt.bufPrint(
             &header_buf,
-            "HTTP/1.1 {d} {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {d} {s}\r\nContent-Length: {d}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
             .{ status, status_text, body.len }
         );
         
@@ -347,10 +401,10 @@ pub const SimpleHttpServer = struct {
     
     fn sendJsonResponse(self: *SimpleHttpServer, connection: std.net.Server.Connection, status: u16, status_text: []const u8, json: []const u8) !void {
         _ = self;
-        var header_buf: [512]u8 = undefined;
+        var header_buf: [constants.HTTP_HEADER_BUFFER_SIZE]u8 = undefined;
         const headers = try std.fmt.bufPrint(
             &header_buf,
-            "HTTP/1.1 {d} {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {d} {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
             .{ status, status_text, json.len }
         );
         
@@ -396,11 +450,11 @@ pub const SimpleHttpServer = struct {
             "text/plain";
         
         // Send response with appropriate content type
-        var header_buf: [512]u8 = undefined;
+        var header_buf: [constants.HTTP_HEADER_BUFFER_SIZE]u8 = undefined;
         const headers = try std.fmt.bufPrint(
             &header_buf,
-            "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
-            .{ content_type, content.len }
+            "HTTP/1.1 {d} OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+            .{ constants.HTTP_OK, content_type, content.len }
         );
         
         _ = try connection.stream.write(headers);
@@ -411,12 +465,15 @@ pub const SimpleHttpServer = struct {
         // Note: connection.stream.close() is handled by the caller (handleConnection)
         
         // Send SSE headers
-        const headers = 
-            "HTTP/1.1 200 OK\r\n" ++
+        var headers_buf: [256]u8 = undefined;
+        const headers = try std.fmt.bufPrint(&headers_buf,
+            "HTTP/1.1 {d} OK\r\n" ++
             "Content-Type: text/event-stream\r\n" ++
             "Cache-Control: no-cache\r\n" ++
             "Connection: keep-alive\r\n" ++
-            "\r\n";
+            "\r\n",
+            .{constants.HTTP_OK}
+        );
         _ = try connection.stream.write(headers);
         
         // Send initial value
@@ -455,9 +512,16 @@ pub const SimpleHttpServer = struct {
             return;
         }
         
+        // Check if open token generation is allowed
+        if (!self.allow_token_generation) {
+            log.warn("Token generation attempt blocked - open token generation is disabled", .{});
+            try self.sendResponse(connection, 403, "Forbidden", "Token generation is disabled");
+            return;
+        }
+        
         // Find body
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse std.mem.indexOf(u8, request, "\n\n") orelse {
-            try self.sendResponse(connection, 400, "Bad Request", "");
+            try self.sendResponse(connection, constants.HTTP_BAD_REQUEST, "Bad Request", "");
             return;
         };
         
@@ -468,7 +532,7 @@ pub const SimpleHttpServer = struct {
         
         // Parse request body
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
-            try self.sendResponse(connection, 400, "Bad Request", "Invalid JSON");
+            try self.sendResponse(connection, constants.HTTP_BAD_REQUEST, "Bad Request", "Invalid JSON");
             return;
         };
         defer parsed.deinit();
@@ -492,7 +556,7 @@ pub const SimpleHttpServer = struct {
             .uid = uid,
             .email = email,
             .iat = std.time.timestamp(),
-            .exp = std.time.timestamp() + 3600, // 1 hour
+            .exp = std.time.timestamp() + constants.JWT_DEFAULT_EXPIRY_SECONDS,
         };
         
         // Generate token
@@ -507,13 +571,29 @@ pub const SimpleHttpServer = struct {
             var response_obj = std.json.ObjectMap.init(self.allocator);
             defer response_obj.deinit();
             try response_obj.put("token", .{ .string = token });
-            try response_obj.put("expires_in", .{ .integer = 3600 });
+            try response_obj.put("expires_in", .{ .integer = constants.JWT_DEFAULT_EXPIRY_SECONDS });
             
             const response_value = std.json.Value{ .object = response_obj };
             const response_json = try std.json.stringifyAlloc(self.allocator, response_value, .{});
             defer self.allocator.free(response_json);
             
-            try self.sendJsonResponse(connection, 200, "OK", response_json);
+            try self.sendJsonResponse(connection, constants.HTTP_OK, "OK", response_json);
         }
+    }
+    
+    fn handleOptions(self: *SimpleHttpServer, connection: std.net.Server.Connection) !void {
+        _ = self;
+        var headers_buf: [256]u8 = undefined;
+        const headers = try std.fmt.bufPrint(&headers_buf,
+            "HTTP/1.1 {d} OK\r\n" ++
+            "Access-Control-Allow-Origin: *\r\n" ++
+            "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n" ++
+            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n" ++
+            "Content-Length: 0\r\n" ++
+            "Connection: close\r\n" ++
+            "\r\n",
+            .{constants.HTTP_OK}
+        );
+        _ = try connection.stream.write(headers);
     }
 };

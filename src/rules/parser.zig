@@ -47,7 +47,9 @@ pub const RulesParser = struct {
                 errdefer child.deinit(self.allocator);
                 
                 try self.parseRulesObject(&child, val);
-                try parent.children.put(key, child);
+                // Duplicate the key to ensure it's not invalidated
+                const key_copy = try self.allocator.dupe(u8, key);
+                try parent.children.put(key_copy, child);
             }
         }
     }

@@ -23,6 +23,9 @@ pub const Rule = struct {
 
 /// Context for rule evaluation
 pub const RuleContext = struct {
+    /// Allocator for memory management
+    allocator: std.mem.Allocator,
+    
     /// Authentication context
     auth: struct {
         uid: ?[]const u8 = null,
@@ -39,7 +42,7 @@ pub const RuleContext = struct {
     /// New data being written (for write operations)
     new_data: ?@import("../storage/value.zig").Value = null,
     
-    /// Existing data at the path
+    /// Existing data at the path (owned by this context)
     data: ?@import("../storage/value.zig").Value = null,
     
     /// Root data accessor for cross-references
@@ -47,6 +50,7 @@ pub const RuleContext = struct {
     
     pub fn init(allocator: std.mem.Allocator) RuleContext {
         return .{
+            .allocator = allocator,
             .auth = .{},
             .path = "",
             .variables = std.StringHashMap([]const u8).init(allocator),
@@ -55,6 +59,11 @@ pub const RuleContext = struct {
     
     pub fn deinit(self: *RuleContext) void {
         self.variables.deinit();
+        
+        // Clean up cloned data if present
+        if (self.data) |*data| {
+            data.deinit(self.allocator);
+        }
     }
     
     /// Get a path variable value
@@ -99,6 +108,8 @@ pub const PathRules = struct {
         
         var iter = self.children.iterator();
         while (iter.next()) |entry| {
+            // Free the duplicated key
+            allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(allocator);
         }
         self.children.deinit();

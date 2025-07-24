@@ -1,0 +1,20 @@
+# Node.js
+node_modules/
+package-lock.json
+
+# Build outputs
+build/
+
+# Test data
+test-data/
+test-simple/
+test-basic/
+test-jwt/
+test-auth-only/
+demo-data/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp

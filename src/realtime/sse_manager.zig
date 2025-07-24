@@ -1,5 +1,6 @@
 const std = @import("std");
 const Value = @import("../storage/value.zig").Value;
+const constants = @import("../constants.zig");
 
 const log = std.log.scoped(.sse_manager);
 
@@ -9,7 +10,7 @@ pub const SSEConnection = struct {
     allocator: std.mem.Allocator,
     
     pub fn sendEvent(self: *SSEConnection, event_type: []const u8, data: []const u8) !void {
-        var buffer: [1024]u8 = undefined;
+        var buffer: [constants.SSE_EVENT_BUFFER_SIZE]u8 = undefined;
         const message = try std.fmt.bufPrint(&buffer, "event: {s}\ndata: {s}\n\n", .{event_type, data});
         _ = self.stream.write(message) catch |err| {
             log.debug("Failed to send event to client: {}", .{err});
@@ -18,7 +19,7 @@ pub const SSEConnection = struct {
     }
     
     pub fn sendData(self: *SSEConnection, data: []const u8) !void {
-        var buffer: [1024]u8 = undefined;
+        var buffer: [constants.SSE_EVENT_BUFFER_SIZE]u8 = undefined;
         const message = try std.fmt.bufPrint(&buffer, "data: {s}\n\n", .{data});
         _ = self.stream.write(message) catch |err| {
             log.debug("Failed to send data to client: {}", .{err});

@@ -343,6 +343,10 @@ admin:
             
             <div id="authStatus" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
                 <strong>Status:</strong> <span id="authStatusText">No token</span>
+                <div id="tokenExpiry" style="display: none; margin-top: 5px;">
+                    <strong>Expires:</strong> <span id="expiryTime"></span>
+                    <span id="expiryWarning" style="color: #e74c3c; margin-left: 10px; display: none;">⚠️ Token expired!</span>
+                </div>
             </div>
             
             <div class="form-group">
@@ -392,6 +396,9 @@ admin:
                 authToken = storedToken;
                 updateAuthStatus();
             }
+            
+            // Check token expiry every 30 seconds
+            setInterval(updateAuthStatus, 30000);
         });
 
         function log(message, type = 'info') {
@@ -420,17 +427,56 @@ admin:
             const statusText = document.getElementById('authStatusText');
             const tokenDisplay = document.getElementById('tokenDisplay');
             const currentTokenField = document.getElementById('currentToken');
+            const expiryDiv = document.getElementById('tokenExpiry');
+            const expiryTime = document.getElementById('expiryTime');
+            const expiryWarning = document.getElementById('expiryWarning');
             
             if (authToken) {
-                statusText.textContent = 'Token active';
-                statusText.style.color = '#27ae60';
+                // Parse JWT to get expiry
+                try {
+                    const parts = authToken.split('.');
+                    const payload = JSON.parse(atob(parts[1]));
+                    const exp = payload.exp * 1000; // Convert to milliseconds
+                    const now = Date.now();
+                    
+                    if (exp > now) {
+                        statusText.textContent = 'Token active';
+                        statusText.style.color = '#27ae60';
+                        
+                        const expiryDate = new Date(exp);
+                        expiryTime.textContent = expiryDate.toLocaleString();
+                        expiryDiv.style.display = 'block';
+                        expiryWarning.style.display = 'none';
+                        
+                        // Warn if expiring soon (within 5 minutes)
+                        if (exp - now < 5 * 60 * 1000) {
+                            expiryTime.style.color = '#f39c12';
+                            expiryTime.textContent += ' (expiring soon!)';
+                        } else {
+                            expiryTime.style.color = 'inherit';
+                        }
+                    } else {
+                        statusText.textContent = 'Token expired';
+                        statusText.style.color = '#e74c3c';
+                        expiryTime.textContent = new Date(exp).toLocaleString();
+                        expiryDiv.style.display = 'block';
+                        expiryWarning.style.display = 'inline';
+                        authToken = null; // Clear expired token
+                    }
+                } catch (e) {
+                    statusText.textContent = 'Invalid token';
+                    statusText.style.color = '#e74c3c';
+                    expiryDiv.style.display = 'none';
+                }
+                
                 tokenDisplay.style.display = 'block';
-                currentTokenField.value = authToken;
+                currentTokenField.value = authToken || '';
             } else {
                 statusText.textContent = 'No token';
                 statusText.style.color = '#e74c3c';
                 tokenDisplay.style.display = 'none';
                 currentTokenField.value = '';
+                expiryDiv.style.display = 'none';
             }
         }
 
@@ -485,7 +531,9 @@ admin:
         async function getValue() {
             const path = document.getElementById('path').value;
             try {
-                const response = await fetch(path);
+                const response = await fetch(path, {
+                    headers: getAuthHeaders()
+                });
                 const data = await response.text();
                 
                 if (response.ok) {

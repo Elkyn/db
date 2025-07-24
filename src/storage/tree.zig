@@ -1,6 +1,5 @@
 const std = @import("std");
-
-const MAX_PATH_LENGTH = 1024;
+const constants = @import("../constants.zig");
 const PATH_SEPARATOR = '/';
 
 pub const PathError = error{
@@ -20,7 +19,7 @@ pub const Path = struct {
             return error.InvalidPath;
         }
         
-        if (raw_path.len > MAX_PATH_LENGTH) {
+        if (raw_path.len > constants.MAX_PATH_LENGTH) {
             return error.PathTooLong;
         }
 

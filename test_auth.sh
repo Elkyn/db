@@ -2,8 +2,8 @@
 
 # Test authentication with Elkyn DB
 
-echo "Starting server with auth enabled..."
-./zig-out/bin/elkyn-server 9001 ./test-data test-secret require &
+echo "Starting server with auth enabled and token generation allowed (for testing)..."
+./zig-out/bin/elkyn-server 9001 ./test-data test-secret require --allow-token-generation &
 SERVER_PID=$!
 sleep 2
 

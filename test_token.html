@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Token Test</title>
+</head>
+<body>
+    <h1>Testing Token Endpoint</h1>
+    <button onclick="testToken()">Test Token Generation</button>
+    <pre id="result"></pre>
+    
+    <script>
+        async function testToken() {
+            const resultEl = document.getElementById('result');
+            resultEl.textContent = 'Testing...';
+            
+            try {
+                const response = await fetch('http://localhost:8889/auth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        uid: 'test-user',
+                        email: 'test@example.com'
+                    })
+                });
+                
+                const statusText = `Status: ${response.status} ${response.statusText}\n`;
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultEl.textContent = statusText + JSON.stringify(data, null, 2);
+                } else {
+                    const text = await response.text();
+                    resultEl.textContent = statusText + 'Error: ' + text;
+                }
+            } catch (err) {
+                resultEl.textContent = 'Network Error: ' + err.message;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -31,6 +31,32 @@ pub fn build(b: *std.Build) void {
     
     b.installArtifact(simple_server);
 
+    // Embedded library (shared library for bindings)
+    const embedded_lib = b.addSharedLibrary(.{
+        .name = "elkyn-embedded",
+        .root_source_file = b.path("src/embedded_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    embedded_lib.linkSystemLibrary("lmdb");
+    embedded_lib.linkLibC();
+    
+    b.installArtifact(embedded_lib);
+
+    // Static library version for direct linking
+    const static_lib = b.addStaticLibrary(.{
+        .name = "elkyn-embedded-static",
+        .root_source_file = b.path("src/embedded_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    static_lib.linkSystemLibrary("lmdb");
+    static_lib.linkLibC();
+    
+    b.installArtifact(static_lib);
+
     // Run command
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -45,50 +71,23 @@ pub fn build(b: *std.Build) void {
     // Test configuration
     const test_step = b.step("test", "Run unit tests");
     
-    // Collect all test files
-    const test_files = [_][]const u8{
-        "src/storage/tree_test.zig",
-        "src/storage/lmdb_test.zig",
-        "src/storage/lmdb_cursor_test.zig",
-        "src/storage/storage_test.zig",
-        "src/storage/event_emitter_test.zig",
-        "src/storage/simple_events_test.zig",
-        "src/storage/storage_update_test.zig",
-    };
+    // Use the all_tests.zig file to run all tests with proper module context
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/all_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    unit_tests.linkSystemLibrary("lmdb");
+    unit_tests.linkLibC();
 
-    for (test_files) |test_file| {
-        const unit_tests = b.addTest(.{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        
-        unit_tests.linkSystemLibrary("lmdb");
-        unit_tests.linkLibC();
-
-        const run_unit_tests = b.addRunArtifact(unit_tests);
-        test_step.dependOn(&run_unit_tests.step);
-    }
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    test_step.dependOn(&run_unit_tests.step);
 
     // Test filter option
     const test_filter = b.option([]const u8, "test-filter", "Filter tests by name");
     if (test_filter) |filter| {
-        for (test_files) |test_file| {
-            if (std.mem.indexOf(u8, test_file, filter) != null) {
-                const filtered_test = b.addTest(.{
-                    .root_source_file = b.path(test_file),
-                    .target = target,
-                    .optimize = optimize,
-                });
-                
-                filtered_test.linkSystemLibrary("lmdb");
-                filtered_test.linkLibC();
-                
-                const run_filtered = b.addRunArtifact(filtered_test);
-                test_step.dependOn(&run_filtered.step);
-                break;
-            }
-        }
+        unit_tests.filters = &.{filter};
     }
 
     // Benchmark step
