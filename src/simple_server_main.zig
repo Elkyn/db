@@ -13,13 +13,13 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     
-    const port: u16 = if (args.len > 1) try std.fmt.parseInt(u16, args[1], 10) else 9000;
+    const port: u16 = if (args.len > 1) try std.fmt.parseInt(u16, args[1], 10) else 8080;
     const data_dir = if (args.len > 2) args[2] else "./data";
     
     // Create data directory
     std.fs.cwd().makePath(data_dir) catch {};
     
-    std.debug.print("Starting Elkyn DB on port {d} with data dir: {s}\n", .{port, data_dir});
+    std.debug.print("Starting simple HTTP server on port {d} with data dir: {s}\n", .{port, data_dir});
     
     // Initialize storage
     var storage = try Storage.init(allocator, data_dir);
@@ -41,7 +41,7 @@ pub fn main() !void {
         "/", // Watch root path
         struct {
             fn onEvent(event: @import("storage/event_emitter.zig").Event, context: ?*anyopaque) void {
-                std.log.debug("SSE listener received event: type={}, path={s}", .{event.type, event.path});
+                std.debug.print("SSE listener received event: type={}, path={s}\n", .{event.type, event.path});
                 const srv = @as(*SimpleHttpServer, @ptrCast(@alignCast(context.?)));
                 // Forward event to SSE manager
                 srv.sse_manager.notifyValueChanged(event.path, event.value) catch |err| {

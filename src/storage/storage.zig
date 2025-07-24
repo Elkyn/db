@@ -52,7 +52,6 @@ pub const Storage = struct {
         var old_value: ?Value = null;
         if (self.event_emitter != null) {
             old_value = self.get(normalized) catch null;
-            defer if (old_value) |*ov| ov.deinit(self.allocator);
         }
 
         // Begin transaction
@@ -71,13 +70,33 @@ pub const Storage = struct {
 
         // Emit event after successful commit
         if (self.event_emitter) |emitter| {
-            try emitter.emitValueChanged(normalized, value, old_value);
+            std.debug.print("Storage.set: Emitting event for path={s}\n", .{normalized});
+            // Create a copy of the value for the event
+            var value_copy = try value.clone(self.allocator);
+            errdefer value_copy.deinit(self.allocator);
+            
+            try emitter.emitValueChanged(normalized, value_copy, old_value);
+            // Clean up old value after emitting event
+            if (old_value) |*ov| ov.deinit(self.allocator);
+        } else {
+            std.debug.print("Storage.set: No event emitter set\n", .{});
+            // Clean up old value if no emitter
+            if (old_value) |*ov| ov.deinit(self.allocator);
         }
     }
     
     fn ensureParentPaths(self: *Storage, db: *lmdb.Database, path: []const u8) !void {
         _ = self;
         if (std.mem.eql(u8, path, "/")) return;
+        
+        // Ensure root exists
+        _ = db.get("/") catch |err| {
+            if (err == error.NotFound) {
+                try db.put("/", "__branch__");
+            } else {
+                return err;
+            }
+        };
         
         // Find all parent paths
         var i: usize = 1; // Skip first /
@@ -154,7 +173,16 @@ pub const Storage = struct {
         defer txn.deinit();
 
         var db = try txn.openDatabase(null);
-        const data = try db.get(normalized);
+        const data = db.get(normalized) catch |err| {
+            if (err == error.NotFound) {
+                // For root path with no data, return empty object
+                if (std.mem.eql(u8, normalized, "/")) {
+                    return try self.reconstructObject(&db, normalized);
+                }
+                return error.NotFound;
+            }
+            return err;
+        };
 
         // Check if this is a branch node
         if (std.mem.eql(u8, data, "__branch__")) {
@@ -302,7 +330,6 @@ pub const Storage = struct {
         var old_value: ?Value = null;
         if (self.event_emitter != null) {
             old_value = self.get(normalized) catch null;
-            defer if (old_value) |*ov| ov.deinit(self.allocator);
         }
 
         // Delete from LMDB
@@ -331,6 +358,11 @@ pub const Storage = struct {
         // Emit event after successful commit
         if (self.event_emitter) |emitter| {
             try emitter.emitValueDeleted(normalized, old_value);
+            // Clean up old value after emitting event
+            if (old_value) |*ov| ov.deinit(self.allocator);
+        } else {
+            // Clean up old value if no emitter
+            if (old_value) |*ov| ov.deinit(self.allocator);
         }
     }
     

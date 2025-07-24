@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elkyn DB Test Dashboard</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem 0;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        header h1 {
+            text-align: center;
+            font-size: 2rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .panel h2 {
+            margin-bottom: 15px;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input, textarea, select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button.delete {
+            background: #e74c3c;
+        }
+
+        button.delete:hover {
+            background: #c0392b;
+        }
+
+        button.secondary {
+            background: #95a5a6;
+        }
+
+        button.secondary:hover {
+            background: #7f8c8d;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        .event-log {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            height: 400px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .event {
+            padding: 5px;
+            margin: 2px 0;
+            border-left: 3px solid #3498db;
+            padding-left: 10px;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .event.error {
+            border-left-color: #e74c3c;
+            color: #ff6b6b;
+        }
+
+        .event.success {
+            border-left-color: #27ae60;
+        }
+
+        .event-time {
+            color: #95a5a6;
+            font-size: 11px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status.connected {
+            background: #27ae60;
+            color: white;
+        }
+
+        .status.disconnected {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .tree-view {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .tree-node {
+            margin-left: 20px;
+        }
+
+        .tree-key {
+            color: #8b4513;
+            font-weight: 600;
+        }
+
+        .tree-value {
+            color: #008000;
+        }
+
+        .tree-null {
+            color: #808080;
+            font-style: italic;
+        }
+
+        .sse-connections {
+            margin-top: 20px;
+        }
+
+        .connection-item {
+            background: #ecf0f1;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .response-display {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🚀 Elkyn DB Test Dashboard</h1>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="grid">
+            <!-- CRUD Operations Panel -->
+            <div class="panel">
+                <h2>Database Operations</h2>
+                
+                <div class="form-group">
+                    <label for="path">Path:</label>
+                    <input type="text" id="path" placeholder="/users/123" value="/test/value">
+                </div>
+
+                <div class="form-group">
+                    <label for="value">Value (JSON):</label>
+                    <textarea id="value" placeholder='{"name": "John", "age": 30}'>"Hello, Elkyn!"</textarea>
+                </div>
+
+                <div class="button-group">
+                    <button onclick="getValue()">GET</button>
+                    <button onclick="setValue()">PUT</button>
+                    <button class="delete" onclick="deleteValue()">DELETE</button>
+                </div>
+
+                <div id="response" class="response-display" style="display: none;"></div>
+            </div>
+
+            <!-- Real-time Monitoring Panel -->
+            <div class="panel">
+                <h2>Real-time Monitoring</h2>
+                
+                <div class="form-group">
+                    <label for="watchPath">Watch Path:</label>
+                    <input type="text" id="watchPath" placeholder="/test/value" value="/test/value">
+                </div>
+
+                <div class="button-group">
+                    <button onclick="startWatching()">Start Watching</button>
+                    <button class="secondary" onclick="stopAllWatching()">Stop All</button>
+                    <span id="connectionStatus" class="status disconnected">Disconnected</span>
+                </div>
+
+                <div class="sse-connections" id="connections"></div>
+
+                <h3 style="margin-top: 20px;">Event Log</h3>
+                <div class="event-log" id="eventLog"></div>
+            </div>
+        </div>
+
+        <!-- Data Explorer Panel -->
+        <div class="panel">
+            <h2>Data Explorer</h2>
+            
+            <div class="form-group">
+                <label for="explorePath">Explore Path:</label>
+                <div class="button-group">
+                    <input type="text" id="explorePath" placeholder="/" value="/" style="flex: 1;">
+                    <button onclick="exploreData()">Explore</button>
+                </div>
+            </div>
+
+            <div id="treeView" class="tree-view"></div>
+        </div>
+
+        <!-- Quick Actions Panel -->
+        <div class="panel" style="margin-top: 20px;">
+            <h2>Quick Actions</h2>
+            
+            <div class="button-group">
+                <button onclick="runDemo()">Run Demo</button>
+                <button onclick="clearAll()">Clear All Data</button>
+                <button onclick="loadSampleData()">Load Sample Data</button>
+                <button class="secondary" onclick="clearLogs()">Clear Logs</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let eventSources = [];
+        let eventCounter = 0;
+
+        function log(message, type = 'info') {
+            const eventLog = document.getElementById('eventLog');
+            const time = new Date().toLocaleTimeString();
+            const event = document.createElement('div');
+            event.className = `event ${type}`;
+            event.innerHTML = `<span class="event-time">[${time}]</span> ${message}`;
+            eventLog.insertBefore(event, eventLog.firstChild);
+            eventCounter++;
+            
+            // Keep only last 100 events
+            while (eventLog.children.length > 100) {
+                eventLog.removeChild(eventLog.lastChild);
+            }
+        }
+
+        function showResponse(data, isError = false) {
+            const responseDiv = document.getElementById('response');
+            responseDiv.style.display = 'block';
+            responseDiv.style.color = isError ? '#e74c3c' : '#27ae60';
+            responseDiv.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        }
+
+        async function getValue() {
+            const path = document.getElementById('path').value;
+            try {
+                const response = await fetch(path);
+                const data = await response.text();
+                
+                if (response.ok) {
+                    showResponse(data);
+                    log(`GET ${path} - Success`, 'success');
+                } else {
+                    showResponse(`Error: ${response.status} ${response.statusText}`, true);
+                    log(`GET ${path} - ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showResponse(`Error: ${error.message}`, true);
+                log(`GET ${path} - ${error.message}`, 'error');
+            }
+        }
+
+        async function setValue() {
+            const path = document.getElementById('path').value;
+            const value = document.getElementById('value').value;
+            
+            try {
+                const response = await fetch(path, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: value
+                });
+                
+                if (response.ok) {
+                    showResponse('Value set successfully');
+                    log(`PUT ${path} - Success`, 'success');
+                } else {
+                    showResponse(`Error: ${response.status} ${response.statusText}`, true);
+                    log(`PUT ${path} - ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showResponse(`Error: ${error.message}`, true);
+                log(`PUT ${path} - ${error.message}`, 'error');
+            }
+        }
+
+        async function deleteValue() {
+            const path = document.getElementById('path').value;
+            
+            try {
+                const response = await fetch(path, { method: 'DELETE' });
+                
+                if (response.ok) {
+                    showResponse('Value deleted successfully');
+                    log(`DELETE ${path} - Success`, 'success');
+                } else {
+                    showResponse(`Error: ${response.status} ${response.statusText}`, true);
+                    log(`DELETE ${path} - ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showResponse(`Error: ${error.message}`, true);
+                log(`DELETE ${path} - ${error.message}`, 'error');
+            }
+        }
+
+        function startWatching() {
+            const path = document.getElementById('watchPath').value;
+            const eventSource = new EventSource(`${path}/.watch`);
+            
+            const connectionId = `conn-${Date.now()}`;
+            const connectionItem = document.createElement('div');
+            connectionItem.className = 'connection-item';
+            connectionItem.id = connectionId;
+            connectionItem.innerHTML = `
+                <span>Watching: ${path}</span>
+                <button class="secondary" onclick="stopWatching('${connectionId}')">Stop</button>
+            `;
+            
+            document.getElementById('connections').appendChild(connectionItem);
+            
+            eventSource.onopen = () => {
+                log(`SSE Connected: ${path}`, 'success');
+                updateConnectionStatus();
+            };
+            
+            eventSource.onmessage = (event) => {
+                log(`[${path}] Data: ${event.data}`);
+            };
+            
+            eventSource.onerror = (error) => {
+                log(`SSE Error on ${path}`, 'error');
+                if (eventSource.readyState === EventSource.CLOSED) {
+                    stopWatching(connectionId);
+                }
+            };
+            
+            eventSources.push({ id: connectionId, source: eventSource, path });
+        }
+
+        function stopWatching(connectionId) {
+            const index = eventSources.findIndex(es => es.id === connectionId);
+            if (index !== -1) {
+                const { source, path } = eventSources[index];
+                source.close();
+                eventSources.splice(index, 1);
+                
+                const element = document.getElementById(connectionId);
+                if (element) element.remove();
+                
+                log(`SSE Disconnected: ${path}`);
+                updateConnectionStatus();
+            }
+        }
+
+        function stopAllWatching() {
+            while (eventSources.length > 0) {
+                stopWatching(eventSources[0].id);
+            }
+        }
+
+        function updateConnectionStatus() {
+            const status = document.getElementById('connectionStatus');
+            if (eventSources.length > 0) {
+                status.className = 'status connected';
+                status.textContent = `Connected (${eventSources.length})`;
+            } else {
+                status.className = 'status disconnected';
+                status.textContent = 'Disconnected';
+            }
+        }
+
+        async function exploreData() {
+            const path = document.getElementById('explorePath').value;
+            try {
+                const response = await fetch(path);
+                const data = await response.text();
+                
+                if (response.ok) {
+                    const parsed = JSON.parse(data);
+                    document.getElementById('treeView').innerHTML = renderTree(parsed);
+                    log(`Explored ${path}`, 'success');
+                } else {
+                    document.getElementById('treeView').innerHTML = `<span class="tree-null">Error: ${response.status}</span>`;
+                    log(`Explore ${path} - ${response.status}`, 'error');
+                }
+            } catch (error) {
+                document.getElementById('treeView').innerHTML = `<span class="tree-null">Error: ${error.message}</span>`;
+                log(`Explore ${path} - ${error.message}`, 'error');
+            }
+        }
+
+        function renderTree(obj, indent = 0) {
+            if (obj === null) return '<span class="tree-null">null</span>';
+            if (typeof obj !== 'object') return `<span class="tree-value">${JSON.stringify(obj)}</span>`;
+            
+            let html = '';
+            const spacing = '  '.repeat(indent);
+            
+            if (Array.isArray(obj)) {
+                html += '[\n';
+                obj.forEach((item, index) => {
+                    html += `${spacing}  ${index}: ${renderTree(item, indent + 1)}${index < obj.length - 1 ? ',' : ''}\n`;
+                });
+                html += `${spacing}]`;
+            } else {
+                html += '{\n';
+                const entries = Object.entries(obj);
+                entries.forEach(([key, value], index) => {
+                    html += `${spacing}  <span class="tree-key">"${key}"</span>: ${renderTree(value, indent + 1)}${index < entries.length - 1 ? ',' : ''}\n`;
+                });
+                html += `${spacing}}`;
+            }
+            
+            return html;
+        }
+
+        async function runDemo() {
+            log('Starting demo...', 'success');
+            
+            // Start watching
+            document.getElementById('watchPath').value = '/demo';
+            startWatching();
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Set initial value
+            document.getElementById('path').value = '/demo/message';
+            document.getElementById('value').value = '"Demo started!"';
+            await setValue();
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Update value
+            document.getElementById('value').value = '"Demo updated!"';
+            await setValue();
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Set nested value
+            document.getElementById('path').value = '/demo/user';
+            document.getElementById('value').value = '{"name": "Demo User", "score": 100}';
+            await setValue();
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Explore the data
+            document.getElementById('explorePath').value = '/demo';
+            await exploreData();
+            
+            log('Demo completed!', 'success');
+        }
+
+        async function clearAll() {
+            if (confirm('Are you sure you want to clear all data?')) {
+                // This would need a server endpoint to clear all data
+                log('Clear all data - Not implemented yet', 'error');
+            }
+        }
+
+        async function loadSampleData() {
+            log('Loading sample data...', 'success');
+            
+            const sampleData = [
+                { path: '/users/alice', value: '{"name": "Alice", "email": "alice@example.com", "role": "admin"}' },
+                { path: '/users/bob', value: '{"name": "Bob", "email": "bob@example.com", "role": "user"}' },
+                { path: '/products/1', value: '{"name": "Widget", "price": 9.99, "stock": 100}' },
+                { path: '/products/2', value: '{"name": "Gadget", "price": 19.99, "stock": 50}' },
+                { path: '/settings/theme', value: '"dark"' },
+                { path: '/settings/notifications', value: 'true' }
+            ];
+            
+            for (const item of sampleData) {
+                document.getElementById('path').value = item.path;
+                document.getElementById('value').value = item.value;
+                await setValue();
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            
+            log('Sample data loaded!', 'success');
+        }
+
+        function clearLogs() {
+            document.getElementById('eventLog').innerHTML = '';
+            eventCounter = 0;
+            log('Logs cleared');
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            log('Dashboard ready');
+            updateConnectionStatus();
+            
+            // If we're at the root path, redirect to /index.html
+            if (window.location.pathname === '/') {
+                window.location.pathname = '/index.html';
+            }
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopAllWatching();
+        });
+    </script>
+</body>
+</html>

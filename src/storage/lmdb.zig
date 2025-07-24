@@ -60,9 +60,15 @@ pub const Environment = struct {
         defer allocator.free(path_z);
         
         // Create directory if it doesn't exist
-        std.fs.makeDirAbsolute(path) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
+        if (std.fs.path.isAbsolute(path)) {
+            std.fs.makeDirAbsolute(path) catch |err| {
+                if (err != error.PathAlreadyExists) return err;
+            };
+        } else {
+            std.fs.cwd().makePath(path) catch |err| {
+                if (err != error.PathAlreadyExists) return err;
+            };
+        }
         
         rc = c.mdb_env_open(env, path_z, c.MDB_WRITEMAP | c.MDB_NOMETASYNC, 0o664);
         if (rc != 0) {

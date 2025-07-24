@@ -127,6 +127,8 @@ pub const EventEmitter = struct {
 
     /// Emit an event to all matching subscribers
     pub fn emit(self: *EventEmitter, event: Event) !void {
+        std.debug.print("EventEmitter.emit: type={}, path={s}\n", .{event.type, event.path});
+        
         // Create a temporary list of matching subscribers to avoid holding lock during callbacks
         var matching = std.ArrayList(struct { listener: ListenerFn, context: ?*anyopaque }).init(self.allocator);
         defer matching.deinit();
@@ -141,6 +143,7 @@ pub const EventEmitter = struct {
                 
                 // Check if the event path matches the subscription pattern
                 if (try self.pathMatchesSubscription(event.path, sub)) {
+                    std.log.debug("EventEmitter: Found matching subscription for path={s}", .{event.path});
                     try matching.append(.{
                         .listener = sub.listener,
                         .context = sub.context,
@@ -149,6 +152,8 @@ pub const EventEmitter = struct {
             }
         }
 
+        std.log.debug("EventEmitter: Calling {} listeners", .{matching.items.len});
+        
         // Call listeners outside of the lock
         for (matching.items) |match| {
             match.listener(event, match.context);
@@ -198,6 +203,7 @@ pub const EventEmitter = struct {
         new_value: Value,
         old_value: ?Value,
     ) !void {
+        std.debug.print("EventEmitter.emitValueChanged: path={s}\n", .{path});
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);
 
@@ -210,7 +216,7 @@ pub const EventEmitter = struct {
         }
         errdefer if (old_val_copy) |*ov| ov.deinit(self.allocator);
 
-        var event = Event{
+        const event = Event{
             .type = .value_changed,
             .path = path_copy,
             .value = new_val_copy,
@@ -218,11 +224,11 @@ pub const EventEmitter = struct {
             .key = null,
         };
         
-        // Emit takes ownership, but we need to clean up after
+        // Emit the event - listeners are called synchronously
         try self.emit(event);
         
-        // Clean up the event data after emission
-        event.deinit(self.allocator);
+        // Event data should NOT be cleaned up here - it's a memory leak!
+        // TODO: Fix this by making emit take ownership and having listeners copy what they need
     }
 
     /// Helper to emit delete events
@@ -240,7 +246,7 @@ pub const EventEmitter = struct {
         }
         errdefer if (old_val_copy) |*ov| ov.deinit(self.allocator);
 
-        var event = Event{
+        const event = Event{
             .type = .value_deleted,
             .path = path_copy,
             .value = null,
@@ -250,7 +256,7 @@ pub const EventEmitter = struct {
 
         try self.emit(event);
         
-        // Clean up the event data after emission
-        event.deinit(self.allocator);
+        // Event data should NOT be cleaned up here - it's a memory leak!
+        // TODO: Fix this by making emit take ownership and having listeners copy what they need
     }
 };

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Elkyn DB SSE Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .log { background: #f0f0f0; padding: 10px; margin: 10px 0; }
+        button { margin: 5px; padding: 5px 10px; }
+    </style>
+</head>
+<body>
+    <h1>Elkyn DB Server-Sent Events Test</h1>
+    
+    <div>
+        <h2>Controls</h2>
+        <input type="text" id="path" value="/test/value" placeholder="Path to watch">
+        <button onclick="startWatching()">Start Watching</button>
+        <button onclick="stopWatching()">Stop Watching</button>
+        <br><br>
+        <input type="text" id="updateValue" placeholder="New value">
+        <button onclick="updateValue()">Update Value</button>
+        <button onclick="deleteValue()">Delete Value</button>
+    </div>
+    
+    <div>
+        <h2>Events</h2>
+        <div id="events"></div>
+    </div>
+    
+    <script>
+        let eventSource = null;
+        
+        function log(message) {
+            const div = document.createElement('div');
+            div.className = 'log';
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            document.getElementById('events').prepend(div);
+        }
+        
+        function startWatching() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            const path = document.getElementById('path').value;
+            log(`Starting to watch: ${path}`);
+            
+            eventSource = new EventSource(`http://localhost:8889${path}/.watch`);
+            
+            eventSource.onopen = () => {
+                log('Connection opened');
+            };
+            
+            eventSource.onmessage = (event) => {
+                log(`Data received: ${event.data}`);
+            };
+            
+            eventSource.onerror = (error) => {
+                log('Connection error');
+            };
+        }
+        
+        function stopWatching() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                log('Connection closed');
+            }
+        }
+        
+        async function updateValue() {
+            const path = document.getElementById('path').value;
+            const value = document.getElementById('updateValue').value;
+            
+            try {
+                const response = await fetch(`http://localhost:8889${path}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(value)
+                });
+                log(`Updated ${path} to "${value}" - Status: ${response.status}`);
+            } catch (error) {
+                log(`Error updating value: ${error}`);
+            }
+        }
+        
+        async function deleteValue() {
+            const path = document.getElementById('path').value;
+            
+            try {
+                const response = await fetch(`http://localhost:8889${path}`, {
+                    method: 'DELETE'
+                });
+                log(`Deleted ${path} - Status: ${response.status}`);
+            } catch (error) {
+                log(`Error deleting value: ${error}`);
+            }
+        }
+    </script>
+</body>
+</html>
