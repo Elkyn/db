@@ -6,7 +6,7 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 
 - 🌳 **Tree-structured data** - Intuitive path-based organization
 - ⚡ **Sub-500ms boot time** - Built with Zig for maximum performance  
-- 🔄 **Real-time subscriptions** - Live updates via WebSocket
+- 🔄 **Real-time subscriptions** - Live updates via Server-Sent Events (SSE)
 - 🔒 **JWT-based auth** - Declarative security rules
 - 💾 **LMDB storage** - ACID compliant, crash-safe
 - 🧪 **100% test coverage** - Reliability first
@@ -27,26 +27,26 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 
 ### Phase 2: Real-time Event System & API ✅
 - [x] Event emitter with Observable pattern
-- [x] WebSocket server with proper frame handling
-- [x] HTTP/REST endpoints (GET, PUT, PATCH, DELETE)
+- [x] Server-Sent Events (SSE) for real-time updates
+- [x] HTTP/REST endpoints (GET, PUT, DELETE)
 - [x] Subscription management
 - [x] Path pattern matching for wildcards
 - [x] Event filtering (basic implementation)
 - [x] Basic error handling
 - [x] Unit tests for real-time system
 - [x] Storage integration with event emitter
-- [x] Main server structure with graceful shutdown
-- [x] WebSocket upgrade from HTTP
-- [x] Real-time event delivery over WebSocket
+- [x] Main server structure
+- [x] Real-time event delivery over SSE
+- [x] Node-specific watching (watch /products, get only product updates)
 
-### Phase 3: Demo Web Client 🎯
-- [ ] Simple HTML/JS demo page
-- [ ] WebSocket connection handling
-- [ ] Real-time data display
-- [ ] CRUD operations UI
-- [ ] Tree visualization
-- [ ] Live subscription demo
-- [ ] Basic performance metrics
+### Phase 3: Demo Web Client ✅
+- [x] Interactive web dashboard (served at /index.html)
+- [x] SSE connection handling with EventSource API
+- [x] Real-time data display with live updates
+- [x] CRUD operations UI (GET, PUT, DELETE)
+- [x] Tree visualization in Data Explorer
+- [x] Live subscription demo with multiple watchers
+- [x] Event log showing all real-time updates
 
 ### Phase 4: Authentication & Rules Engine 🔒
 - [ ] JWT token validation (RS256/HS256)
@@ -75,35 +75,40 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 ## Quick Start
 
 ```bash
-# Run with Docker
-docker run -p 9000:9000 -v ./data:/data elkyn/elkyn-db
-
-# Or build from source
+# Build from source
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/elkyn-db --port 9000 --data ./data
+
+# Run the server
+./zig-out/bin/elkyn-server 9000 ./data
+
+# Or with default settings (port 8080, ./data directory)
+./zig-out/bin/elkyn-server
+
+# Access the web dashboard
+open http://localhost:9000/index.html
 ```
 
 ## Example Usage
 
 ```javascript
-// Connect
-const db = new ElkynDB('ws://localhost:9000', {
-  auth: 'your-jwt-token'
+// REST API
+await fetch('http://localhost:9000/users/123', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name: 'Alice',
+    email: 'alice@example.com'
+  })
 });
 
-// Write data
-await db.set('/users/123', {
-  name: 'Alice',
-  email: 'alice@example.com'
-});
+// Subscribe to changes via SSE
+const events = new EventSource('http://localhost:9000/users/.watch');
+events.onmessage = (event) => {
+  console.log('Users changed:', JSON.parse(event.data));
+};
 
-// Subscribe to changes
-db.subscribe('/users/*', (change) => {
-  console.log('User changed:', change);
-});
-
-// Query with filters
-const adults = await db.query('/users/*[?age>=18]');
+// Or use the web dashboard
+// Open http://localhost:9000/index.html in your browser
 ```
 
 ## Rules Example
