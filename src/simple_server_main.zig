@@ -18,6 +18,11 @@ pub fn main() !void {
     const auth_secret = if (args.len > 3) args[3] else null;
     const require_auth = if (args.len > 4) std.mem.eql(u8, args[4], "require") else false;
     
+    std.debug.print("Args count: {d}\n", .{args.len});
+    for (args, 0..) |arg, i| {
+        std.debug.print("  args[{d}] = {s}\n", .{i, arg});
+    }
+    
     // Create data directory
     std.fs.cwd().makePath(data_dir) catch {};
     
@@ -45,6 +50,10 @@ pub fn main() !void {
     // Enable authentication if secret provided
     if (auth_secret) |secret| {
         try server.enableAuth(secret, require_auth);
+        
+        // Also enable default security rules when auth is enabled
+        const DEFAULT_RULES = @import("rules/engine.zig").DEFAULT_RULES;
+        try server.enableRules(DEFAULT_RULES);
     }
     
     // Subscribe to all events for SSE

@@ -18,6 +18,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Simple server executable (with auth support)
+    const simple_server = b.addExecutable(.{
+        .name = "elkyn-server",
+        .root_source_file = b.path("src/simple_server_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    simple_server.linkSystemLibrary("lmdb");
+    simple_server.linkLibC();
+    
+    b.installArtifact(simple_server);
+
     // Run command
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

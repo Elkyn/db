@@ -300,6 +300,43 @@
             <div id="treeView" class="tree-view"></div>
         </div>
 
+        <!-- Security Rules Panel -->
+        <div class="panel" style="margin-top: 20px;">
+            <h2>Security Rules</h2>
+            
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin-bottom: 15px;">
+                <h4 style="margin-top: 0;">Current Rules:</h4>
+                <pre style="margin: 0; font-size: 12px; overflow-x: auto;">
+users/$userId:
+  .read: "$userId === auth.uid"
+  .write: "$userId === auth.uid"
+  name:
+    .read: "true"
+  email:
+    .read: "$userId === auth.uid"
+
+public:
+  .read: "true"
+  .write: "auth != null"
+
+admin:
+  .read: "false"
+  .write: "false"
+                </pre>
+            </div>
+            
+            <div class="form-group">
+                <h4>Test Access Control:</h4>
+                <p style="font-size: 14px; color: #666;">Try accessing different paths to see rules in action:</p>
+                <ul style="font-size: 14px; color: #666;">
+                    <li><code>/users/[your-uid]</code> - You can read/write your own data</li>
+                    <li><code>/users/other-user</code> - Access denied (403)</li>
+                    <li><code>/public</code> - Anyone can read, authenticated users can write</li>
+                    <li><code>/admin</code> - No access (403)</li>
+                </ul>
+            </div>
+        </div>
+
         <!-- Authentication Panel -->
         <div class="panel" style="margin-top: 20px;">
             <h2>Authentication</h2>
@@ -337,6 +374,7 @@
                 <button onclick="runDemo()">Run Demo</button>
                 <button onclick="clearAll()">Clear All Data</button>
                 <button onclick="loadSampleData()">Load Sample Data</button>
+                <button onclick="testRules()">Test Rules</button>
                 <button class="secondary" onclick="clearLogs()">Clear Logs</button>
             </div>
         </div>
@@ -661,15 +699,17 @@
         }
 
         async function loadSampleData() {
-            log('Loading sample data...', 'success');
+            log('Loading sample data with rules demo...', 'success');
+            
+            // Get current user ID from token
+            const uid = authToken ? JSON.parse(atob(authToken.split('.')[1])).uid : 'test-user';
             
             const sampleData = [
-                { path: '/users/alice', value: '{"name": "Alice", "email": "alice@example.com", "role": "admin"}' },
-                { path: '/users/bob', value: '{"name": "Bob", "email": "bob@example.com", "role": "user"}' },
-                { path: '/products/1', value: '{"name": "Widget", "price": 9.99, "stock": 100}' },
-                { path: '/products/2', value: '{"name": "Gadget", "price": 19.99, "stock": 50}' },
-                { path: '/settings/theme', value: '"dark"' },
-                { path: '/settings/notifications', value: 'true' }
+                { path: `/users/${uid}`, value: `{"name": "Current User", "email": "${uid}@example.com", "role": "user"}` },
+                { path: '/users/other-user', value: '{"name": "Other User", "email": "other@example.com", "role": "user"}' },
+                { path: '/public/message', value: '"Hello, this is public!"' },
+                { path: '/public/counter', value: '42' },
+                { path: '/admin/secret', value: '"This should not be accessible"' }
             ];
             
             for (const item of sampleData) {
@@ -680,6 +720,54 @@
             }
             
             log('Sample data loaded!', 'success');
+        }
+        
+        async function testRules() {
+            if (!authToken) {
+                alert('Please generate a token first!');
+                return;
+            }
+            
+            log('Testing security rules...', 'info');
+            
+            const uid = JSON.parse(atob(authToken.split('.')[1])).uid;
+            const tests = [
+                { path: `/users/${uid}`, method: 'GET', expected: 200, desc: 'Read own user data' },
+                { path: `/users/${uid}/name`, method: 'GET', expected: 200, desc: 'Read own user name' },
+                { path: `/users/${uid}`, method: 'PUT', data: '{"name": "Updated"}', expected: 200, desc: 'Update own user data' },
+                { path: '/users/other-user', method: 'GET', expected: 403, desc: 'Read other user data (denied)' },
+                { path: '/users/other-user', method: 'PUT', data: '{"name": "Hacked"}', expected: 403, desc: 'Update other user (denied)' },
+                { path: '/public/test', method: 'GET', expected: 200, desc: 'Read public data' },
+                { path: '/public/test', method: 'PUT', data: '"Hello"', expected: 200, desc: 'Write public data (authenticated)' },
+                { path: '/admin/secret', method: 'GET', expected: 403, desc: 'Read admin data (denied)' },
+            ];
+            
+            for (const test of tests) {
+                try {
+                    const options = {
+                        method: test.method,
+                        headers: getAuthHeaders()
+                    };
+                    
+                    if (test.data) {
+                        options.headers['Content-Type'] = 'application/json';
+                        options.body = test.data;
+                    }
+                    
+                    const response = await fetch(test.path, options);
+                    const status = response.status;
+                    const passed = status === test.expected;
+                    
+                    log(`${test.desc}: ${status} ${passed ? '✓' : '✗ (expected ' + test.expected + ')'}`, 
+                        passed ? 'success' : 'error');
+                } catch (err) {
+                    log(`${test.desc}: Error - ${err.message}`, 'error');
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            log('Rules testing complete!', 'info');
         }
 
         function clearLogs() {

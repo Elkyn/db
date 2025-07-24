@@ -17,6 +17,10 @@ pub const storage_events_test = @import("storage/storage_events_test.zig");
 // Auth tests
 pub const jwt_test = @import("auth/jwt_test.zig");
 
+// Rules tests
+pub const parser_test = @import("rules/parser_test.zig");
+pub const evaluator_test = @import("rules/evaluator_test.zig");
+
 // API tests
 pub const simple_http_server_auth_test = @import("api/simple_http_server_auth_test.zig");
 
@@ -34,5 +38,7 @@ test {
     _ = storage_cursor_test;
     _ = storage_events_test;
     _ = jwt_test;
+    _ = parser_test;
+    _ = evaluator_test;
     _ = simple_http_server_auth_test;
 }

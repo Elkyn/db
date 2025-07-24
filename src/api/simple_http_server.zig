@@ -16,6 +16,7 @@ pub const SimpleHttpServer = struct {
     sse_manager: SSEManager,
     jwt: ?JWT = null,
     require_auth: bool = false,
+    rules_engine: ?@import("../rules/engine.zig").RulesEngine = null,
 
     pub fn init(allocator: std.mem.Allocator, storage: *Storage, port: u16) !SimpleHttpServer {
         const address = try std.net.Address.parseIp("127.0.0.1", port);
@@ -37,6 +38,9 @@ pub const SimpleHttpServer = struct {
     }
 
     pub fn deinit(self: *SimpleHttpServer) void {
+        if (self.rules_engine) |*engine| {
+            engine.deinit();
+        }
         self.sse_manager.deinit();
         self.server.deinit();
     }
@@ -49,6 +53,13 @@ pub const SimpleHttpServer = struct {
         self.jwt = JWT.init(self.allocator, secret);
         self.require_auth = require;
         log.info("Authentication enabled (required: {})", .{require});
+    }
+    
+    pub fn enableRules(self: *SimpleHttpServer, rules_json: []const u8) !void {
+        const RulesEngine = @import("../rules/engine.zig").RulesEngine;
+        self.rules_engine = RulesEngine.init(self.allocator, self.storage);
+        try self.rules_engine.?.loadRules(rules_json);
+        log.info("Security rules enabled", .{});
     }
 
     pub fn start(self: *SimpleHttpServer) !void {
@@ -212,7 +223,20 @@ pub const SimpleHttpServer = struct {
     }
     
     fn handleGet(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
-        _ = auth; // TODO: Use for access control
+        // Check rules if enabled
+        if (self.rules_engine) |*engine| {
+            const allowed = engine.canRead(path, &auth) catch |err| {
+                log.err("Error evaluating read rules: {}", .{err});
+                try self.sendResponse(connection, 500, "Internal Server Error", "");
+                return;
+            };
+            
+            if (!allowed) {
+                try self.sendResponse(connection, 403, "Forbidden", "Access denied");
+                return;
+            }
+        }
+        
         var value = self.storage.get(path) catch |err| {
             if (err == error.NotFound) {
                 try self.sendResponse(connection, 404, "Not Found", "");
@@ -235,7 +259,6 @@ pub const SimpleHttpServer = struct {
     }
     
     fn handlePut(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, request: []const u8, auth: AuthContext) !void {
-        _ = auth; // TODO: Use for access control
         // Find body
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse std.mem.indexOf(u8, request, "\n\n") orelse {
             try self.sendResponse(connection, 400, "Bad Request", "");
@@ -257,6 +280,20 @@ pub const SimpleHttpServer = struct {
         };
         defer value.deinit(self.allocator);
         
+        // Check rules if enabled
+        if (self.rules_engine) |*engine| {
+            const allowed = engine.canWrite(path, &auth, value) catch |err| {
+                log.err("Error evaluating write rules: {}", .{err});
+                try self.sendResponse(connection, 500, "Internal Server Error", "");
+                return;
+            };
+            
+            if (!allowed) {
+                try self.sendResponse(connection, 403, "Forbidden", "Access denied");
+                return;
+            }
+        }
+        
         // Store value
         self.storage.set(path, value) catch {
             try self.sendResponse(connection, 500, "Internal Server Error", "");
@@ -267,7 +304,20 @@ pub const SimpleHttpServer = struct {
     }
     
     fn handleDelete(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
-        _ = auth; // TODO: Use for access control
+        // Check rules if enabled
+        if (self.rules_engine) |*engine| {
+            const allowed = engine.canWrite(path, &auth, null) catch |err| {
+                log.err("Error evaluating write rules: {}", .{err});
+                try self.sendResponse(connection, 500, "Internal Server Error", "");
+                return;
+            };
+            
+            if (!allowed) {
+                try self.sendResponse(connection, 403, "Forbidden", "Access denied");
+                return;
+            }
+        }
+        
         self.storage.delete(path) catch |err| {
             if (err == error.NotFound) {
                 try self.sendResponse(connection, 404, "Not Found", "");
