@@ -69,17 +69,21 @@ pub const Storage = struct {
         try txn.commit();
 
         // Emit event after successful commit
+        // const timestamp = std.time.milliTimestamp();
+        // std.debug.print("Storage.set[{d}]: event_emitter={any} path={s}\n", .{timestamp, self.event_emitter != null, normalized});
         if (self.event_emitter) |emitter| {
-            std.debug.print("Storage.set: Emitting event for path={s}\n", .{normalized});
+            // std.debug.print("Storage.set: emitter pointer={*}\n", .{emitter});
+            
             // Create a copy of the value for the event
             var value_copy = try value.clone(self.allocator);
             errdefer value_copy.deinit(self.allocator);
             
-            try emitter.emitValueChanged(normalized, value_copy, old_value);
+            // std.debug.print("Storage.set: calling emitValueChanged\n", .{});
+            emitter.emitValueChanged(normalized, value_copy, old_value) catch {};
+                // std.debug.print("Storage.set: Failed to emit event: {any}\n", .{err});
             // Clean up old value after emitting event
             if (old_value) |*ov| ov.deinit(self.allocator);
         } else {
-            std.debug.print("Storage.set: No event emitter set\n", .{});
             // Clean up old value if no emitter
             if (old_value) |*ov| ov.deinit(self.allocator);
         }

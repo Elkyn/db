@@ -3,6 +3,10 @@
 #include <memory>
 #include <map>
 #include <cstring>
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <chrono>
 
 // Forward declarations for C functions from Zig
 extern "C" {
@@ -17,6 +21,20 @@ extern "C" {
     int elkyn_delete(ElkynDB* db, const char* path, const char* token);
     char* elkyn_create_token(ElkynDB* db, const char* uid, const char* email);
     void elkyn_free_string(char* ptr);
+    
+    // Event queue functions
+    int elkyn_enable_event_queue(ElkynDB* db);
+    
+    struct C_EventData {
+        uint8_t type;
+        const char* path;
+        const char* value;
+        uint64_t sequence;
+        int64_t timestamp;
+    };
+    
+    size_t elkyn_event_queue_pop_batch(ElkynDB* db, C_EventData* buffer, size_t max_count);
+    size_t elkyn_event_queue_pending(ElkynDB* db);
 }
 
 // Global map to store DB instances
@@ -280,6 +298,18 @@ napi_value CreateToken(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Event queue support
+struct EventListener {
+    napi_threadsafe_function tsfn;
+    std::string pattern;
+    std::atomic<bool> active{true};
+};
+
+// Event handling globals
+static std::map<std::string, std::vector<std::unique_ptr<EventListener>>> event_listeners;
+static std::map<std::string, std::thread> event_threads;
+static std::atomic<uint64_t> next_subscription_id{1};
+
 // Close database
 napi_value Close(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -293,11 +323,316 @@ napi_value Close(napi_env env, napi_callback_info info) {
     
     std::string handle = GetStringFromValue(env, args[0]);
     
+    // Clean up event listeners first
+    auto listeners_it = event_listeners.find(handle);
+    if (listeners_it != event_listeners.end()) {
+        for (auto& listener : listeners_it->second) {
+            listener->active.store(false);
+            napi_release_threadsafe_function(listener->tsfn, napi_tsfn_abort);
+        }
+        event_listeners.erase(listeners_it);
+    }
+    
+    // Clean up the database and signal thread to exit
     auto it = db_instances.find(handle);
+    ElkynDB* db = nullptr;
     if (it != db_instances.end()) {
-        elkyn_deinit(it->second);
+        db = it->second;
         db_instances.erase(it);
     }
+    
+    // Wait for event thread to finish
+    auto thread_it = event_threads.find(handle);
+    if (thread_it != event_threads.end()) {
+        // Wait for thread to finish
+        thread_it->second.join();
+        event_threads.erase(thread_it);
+    }
+    
+    // Now deinit the database
+    if (db != nullptr) {
+        elkyn_deinit(db);
+    }
+    
+    return nullptr;
+}
+
+// Enable event queue
+napi_value EnableEventQueue(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 1) {
+        napi_throw_error(env, nullptr, "handle argument required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    int result = elkyn_enable_event_queue(it->second);
+    
+    // printf("EnableEventQueue: result=%d for handle=%s\n", result, handle.c_str());
+    
+    // Start event processing thread if not already running
+    if (result == 0 && event_threads.find(handle) == event_threads.end()) {
+        event_threads[handle] = std::thread([handle, db = it->second]() {
+            const size_t BATCH_SIZE = 64;
+            std::vector<C_EventData> events(BATCH_SIZE);
+            
+            // printf("Event thread started for handle=%s\n", handle.c_str());
+            
+            while (db_instances.find(handle) != db_instances.end()) {
+                size_t pending = elkyn_event_queue_pending(db);
+                // if (pending > 0) {
+                //     printf("Event thread: %zu events pending\n", pending);
+                // }
+                
+                size_t count = elkyn_event_queue_pop_batch(db, events.data(), BATCH_SIZE);
+                
+                if (count == 0) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    continue;
+                }
+                
+                // printf("Event thread: popped %zu events\n", count);
+                
+                // Process events
+                auto listeners_it = event_listeners.find(handle);
+                if (listeners_it != event_listeners.end()) {
+                    // printf("Event thread: found %zu listeners for handle=%s\n", listeners_it->second.size(), handle.c_str());
+                    for (size_t i = 0; i < count; i++) {
+                        const C_EventData& event = events[i];
+                        // printf("Event thread: processing event path=%s type=%d\n", event.path, event.type);
+                        
+                        // Call each matching listener
+                        for (const auto& listener : listeners_it->second) {
+                            if (!listener->active.load()) continue;
+                            
+                            // Simple pattern matching
+                            bool matches = false;
+                            if (listener->pattern == "/") {
+                                matches = true;
+                            } else if (listener->pattern.back() == '*') {
+                                std::string prefix = listener->pattern.substr(0, listener->pattern.length() - 1);
+                                matches = (std::string(event.path).substr(0, prefix.length()) == prefix);
+                            } else {
+                                matches = (listener->pattern == event.path);
+                            }
+                            
+                            // printf("Event thread: listener pattern=%s matches=%d\n", listener->pattern.c_str(), matches);
+                            
+                            if (matches) {
+                                // Create a deep copy of the event data
+                                auto* event_copy = new C_EventData();
+                                event_copy->type = event.type;
+                                event_copy->sequence = event.sequence;
+                                event_copy->timestamp = event.timestamp;
+                                
+                                // Copy strings
+                                if (event.path) {
+                                    size_t len = strlen(event.path);
+                                    char* path_copy = new char[len + 1];
+                                    strcpy(path_copy, event.path);
+                                    event_copy->path = path_copy;
+                                } else {
+                                    event_copy->path = nullptr;
+                                }
+                                
+                                if (event.value) {
+                                    size_t len = strlen(event.value);
+                                    char* value_copy = new char[len + 1];
+                                    strcpy(value_copy, event.value);
+                                    event_copy->value = value_copy;
+                                } else {
+                                    event_copy->value = nullptr;
+                                }
+                                
+                                // printf("Event thread: passing event to N-API, path=%s\n", event_copy->path);
+                                napi_call_threadsafe_function(
+                                    listener->tsfn,
+                                    event_copy,
+                                    napi_tsfn_nonblocking
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    // printf("Event thread: no listeners for handle=%s\n", handle.c_str());
+                }
+                
+                // Free C strings now that all deep copies have been made
+                for (size_t i = 0; i < count; i++) {
+                    if (events[i].path) elkyn_free_string((char*)events[i].path);
+                    if (events[i].value) elkyn_free_string((char*)events[i].value);
+                }
+            }
+        });
+    }
+    
+    napi_value js_result;
+    napi_create_int32(env, result, &js_result);
+    return js_result;
+}
+
+// Watch for changes
+napi_value Watch(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 3) {
+        napi_throw_error(env, nullptr, "handle, pattern, and callback required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string pattern = GetStringFromValue(env, args[1]);
+    napi_value callback = args[2];
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    // Enable event queue if not already enabled
+    if (event_threads.find(handle) == event_threads.end()) {
+        elkyn_enable_event_queue(it->second);
+        EnableEventQueue(env, info); // Reuse the function to start thread
+    }
+    
+    // Create event listener
+    auto listener = std::make_unique<EventListener>();
+    listener->pattern = pattern;
+    
+    // Create threadsafe function
+    napi_value async_resource_name;
+    napi_create_string_utf8(env, "elkynWatch", NAPI_AUTO_LENGTH, &async_resource_name);
+    
+    napi_create_threadsafe_function(
+        env,
+        callback,
+        nullptr,
+        async_resource_name,
+        0,  // unlimited queue
+        1,  // initial thread count
+        nullptr,
+        nullptr,
+        listener.get(),
+        [](napi_env env, napi_value js_callback, void* context, void* data) {
+            // printf("N-API callback invoked\n");
+            C_EventData* event = static_cast<C_EventData*>(data);
+            
+            if (!event) {
+                // printf("ERROR: event is null!\n");
+                return;
+            }
+            
+            // printf("Event: path=%s type=%d\n", event->path ? event->path : "(null)", event->type);
+            
+            // Create event object
+            napi_value event_obj;
+            napi_create_object(env, &event_obj);
+            
+            // Type
+            napi_value type_str;
+            napi_create_string_utf8(env, 
+                event->type == 1 ? "change" : "delete", 
+                NAPI_AUTO_LENGTH, 
+                &type_str
+            );
+            napi_set_named_property(env, event_obj, "type", type_str);
+            
+            // Path
+            napi_value path_str;
+            napi_create_string_utf8(env, event->path, NAPI_AUTO_LENGTH, &path_str);
+            napi_set_named_property(env, event_obj, "path", path_str);
+            
+            // Value - pass as string, let JS handle parsing
+            if (event->value) {
+                napi_value value_str;
+                napi_create_string_utf8(env, event->value, NAPI_AUTO_LENGTH, &value_str);
+                napi_set_named_property(env, event_obj, "value", value_str);
+            } else {
+                napi_value null_value;
+                napi_get_null(env, &null_value);
+                napi_set_named_property(env, event_obj, "value", null_value);
+            }
+            
+            // Timestamp
+            napi_value timestamp;
+            napi_create_int64(env, event->timestamp, &timestamp);
+            napi_set_named_property(env, event_obj, "timestamp", timestamp);
+            
+            // Call callback
+            // printf("Calling JS callback\n");
+            napi_value global;
+            napi_get_global(env, &global);
+            
+            napi_value argv[] = { event_obj };
+            napi_value result;
+            napi_status status = napi_call_function(env, global, js_callback, 1, argv, &result);
+            if (status != napi_ok) {
+                // printf("ERROR: Failed to call JS callback, status=%d\n", status);
+                
+                // Try to get error info
+                const napi_extended_error_info* error_info;
+                napi_get_last_error_info(env, &error_info);
+                if (error_info->error_message) {
+                    // printf("Error message: %s\n", error_info->error_message);
+                }
+            } // else {
+                // printf("JS callback called successfully\n");
+            // }
+            
+            // Clean up the deep copies
+            if (event->path) {
+                delete[] event->path;
+            }
+            if (event->value) {
+                delete[] event->value;
+            }
+            delete event;
+        },
+        &listener->tsfn
+    );
+    
+    // Generate subscription ID
+    uint64_t subscription_id = next_subscription_id.fetch_add(1);
+    
+    // Store listener
+    event_listeners[handle].push_back(std::move(listener));
+    
+    // Return subscription ID as string
+    napi_value id_str;
+    std::string id = std::to_string(subscription_id);
+    napi_create_string_utf8(env, id.c_str(), id.length(), &id_str);
+    return id_str;
+}
+
+// Unwatch
+napi_value Unwatch(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and subscriptionId required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string id_str = GetStringFromValue(env, args[1]);
+    
+    // For now, just return success
+    // TODO: Implement proper subscription tracking
     
     return nullptr;
 }
@@ -313,6 +648,9 @@ napi_value InitModule(napi_env env, napi_value exports) {
         DECLARE_NAPI_METHOD("delete", Delete),
         DECLARE_NAPI_METHOD("createToken", CreateToken),
         DECLARE_NAPI_METHOD("close", Close),
+        DECLARE_NAPI_METHOD("enableEventQueue", EnableEventQueue),
+        DECLARE_NAPI_METHOD("watch", Watch),
+        DECLARE_NAPI_METHOD("unwatch", Unwatch),
     };
     
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Storage = @import("storage/storage.zig").Storage;
 const EventEmitter = @import("storage/event_emitter.zig").EventEmitter;
+const EventQueue = @import("embedded/event_queue.zig").EventQueue;
 const Value = @import("storage/value.zig").Value;
 const RulesEngine = @import("rules/engine.zig").RulesEngine;
 const JWT = @import("auth/jwt.zig").JWT;
@@ -12,32 +13,86 @@ const AuthContext = @import("auth/context.zig").AuthContext;
 pub const ElkynDB = struct {
     allocator: std.mem.Allocator,
     storage: Storage,
-    event_emitter: EventEmitter,
+    event_emitter: *EventEmitter,
+    event_queue: ?*EventQueue = null,
     rules_engine: ?RulesEngine = null,
     jwt: ?JWT = null,
 
     pub fn init(allocator: std.mem.Allocator, data_dir: []const u8) !ElkynDB {
-        const storage = try Storage.init(allocator, data_dir);
-        const event_emitter = EventEmitter.init(allocator);
-        
-        // Don't connect storage to event emitter for embedded mode to avoid issues
-        // storage.setEventEmitter(&event_emitter);
-        
-        return ElkynDB{
+        // Create the instance with uninitialized values first
+        var db = ElkynDB{
             .allocator = allocator,
-            .storage = storage,
-            .event_emitter = event_emitter,
+            .storage = undefined,
+            .event_emitter = undefined,
+            .event_queue = null,
+            .rules_engine = null,
+            .jwt = null,
         };
+        
+        // Initialize storage and event_emitter in place
+        db.storage = try Storage.init(allocator, data_dir);
+        
+        // Allocate event emitter on heap
+        db.event_emitter = try allocator.create(EventEmitter);
+        db.event_emitter.* = EventEmitter.init(allocator);
+        
+        // Connect storage to event emitter AFTER creating the instance
+        db.storage.setEventEmitter(db.event_emitter);
+        
+        return db;
     }
 
     pub fn deinit(self: *ElkynDB) void {
         if (self.rules_engine) |*engine| {
             engine.deinit();
         }
+        if (self.event_queue) |queue| {
+            // TODO: Unsubscribe from event emitter
+            queue.deinit();
+            self.allocator.destroy(queue);
+        }
         // JWT struct doesn't have a deinit method, just clear the optional
         self.jwt = null;
         self.event_emitter.deinit();
+        self.allocator.destroy(self.event_emitter);
         self.storage.deinit();
+    }
+
+    /// Enable event queue for Node.js bindings
+    pub fn enableEventQueue(self: *ElkynDB) !void {
+        if (self.event_queue != null) return; // Already enabled
+        
+        // std.debug.print("enableEventQueue: creating event queue\n", .{});
+        
+        // Create event queue
+        const queue = try self.allocator.create(EventQueue);
+        queue.* = try EventQueue.init(self.allocator);
+        self.event_queue = queue;
+        
+        // Subscribe to all events and forward to queue
+        _ = try self.event_emitter.subscribe(
+            "/", // Watch everything
+            eventQueueCallback,
+            queue, // Pass queue as context
+            true, // Include children
+        );
+        
+        // std.debug.print("enableEventQueue: subscribed with id={d}\n", .{subscription_id});
+    }
+    
+    fn eventQueueCallback(event: @import("storage/event_emitter.zig").Event, context: ?*anyopaque) void {
+        const queue = @as(*EventQueue, @ptrCast(@alignCast(context.?)));
+        
+        
+        // Map event type
+        const event_type: EventQueue.EventType = switch (event.type) {
+            .value_changed, .child_added, .child_changed => .change,
+            .value_deleted, .child_removed => .delete,
+        };
+        
+        // Push to queue (ignore errors for now)
+        queue.push(event_type, event.path, event.value) catch {};
+            // std.debug.print("eventQueueCallback: failed to push event: {any}\n", .{err});
     }
 
     /// Enable JWT authentication
@@ -180,6 +235,8 @@ export fn elkyn_init(data_dir: [*:0]const u8) ?*ElkynDB {
         return null;
     };
     
+    // std.debug.print("elkyn_init: created db at {*} for dir={s}\n", .{db, std.mem.span(data_dir)});
+    
     return db;
 }
 
@@ -268,4 +325,58 @@ export fn elkyn_free_string(ptr: [*:0]u8) void {
     const allocator = std.heap.c_allocator;
     const len = std.mem.len(ptr);
     allocator.free(ptr[0..len]);
+}
+
+// Event Queue exports
+export fn elkyn_enable_event_queue(db: *ElkynDB) c_int {
+    // std.debug.print("elkyn_enable_event_queue: db at {*}\n", .{db});
+    db.enableEventQueue() catch return -1;
+    return 0;
+}
+
+const C_EventData = extern struct {
+    type: u8,
+    path: [*:0]const u8,
+    value: ?[*:0]const u8,
+    sequence: u64,
+    timestamp: i64,
+};
+
+export fn elkyn_event_queue_pop_batch(db: *ElkynDB, buffer: [*]C_EventData, max_count: usize) usize {
+    const queue = db.event_queue orelse return 0;
+    
+    var count: usize = 0;
+    while (count < max_count) : (count += 1) {
+        const event = queue.pop() orelse break;
+        
+        // Now event.path is a fixed array, so we need to slice it
+        const path_slice = event.path[0..event.path_len];
+        
+        // std.debug.print("elkyn_event_queue_pop_batch: event path={s} len={d}\n", .{path_slice, event.path_len});
+        
+        // Create C-compatible strings
+        const path_z = std.heap.c_allocator.dupeZ(u8, path_slice) catch break;
+        
+        // Create value string if present
+        var value_z: ?[*:0]const u8 = null;
+        if (event.value) |val| {
+            const value_z_str = std.heap.c_allocator.dupeZ(u8, val) catch break;
+            value_z = value_z_str.ptr;
+        }
+        
+        buffer[count] = C_EventData{
+            .type = @intFromEnum(event.type),
+            .path = path_z.ptr,
+            .value = value_z,
+            .sequence = event.sequence,
+            .timestamp = event.timestamp,
+        };
+    }
+    
+    return count;
+}
+
+export fn elkyn_event_queue_pending(db: *ElkynDB) usize {
+    const queue = db.event_queue orelse return 0;
+    return queue.pending();
 }

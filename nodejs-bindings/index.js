@@ -1,9 +1,33 @@
 const binding = require('./build/Release/elkyn_store');
+const { Observable } = require('./src/observable');
 
 class ElkynStore {
-    constructor(dataDir) {
-        this.handle = binding.init(dataDir);
-        this.dataDir = dataDir;
+    constructor(options) {
+        // Handle both old API and new options
+        if (typeof options === 'string') {
+            // Legacy: new ElkynStore('./data')
+            this.handle = binding.init(options);
+            this.dataDir = options;
+            this.mode = 'standalone';
+        } else {
+            // New API: new ElkynStore({ mode: 'standalone', dataDir: './data' })
+            const { mode = 'standalone', dataDir = './data', clusterUrl } = options || {};
+            this.mode = mode;
+            this.dataDir = dataDir;
+            this.clusterUrl = clusterUrl;
+            
+            if (mode === 'standalone') {
+                this.handle = binding.init(dataDir);
+            } else if (mode === 'embedded') {
+                // TODO: Implement cluster connection
+                this.handle = binding.init(dataDir);
+            } else {
+                throw new Error(`Unknown mode: ${mode}`);
+            }
+        }
+        
+        this._observables = new Map();
+        this._eventQueueEnabled = false;
     }
 
     /**
@@ -152,6 +176,56 @@ class ElkynStore {
         };
         
         return this.enableRules(defaultRules);
+    }
+
+    /**
+     * Watch a path for changes (Observable pattern)
+     * @param {string} path - Path to watch (supports wildcards)
+     * @returns {Observable} Observable that emits events
+     * 
+     * @example
+     * // Watch specific path
+     * store.watch('/users/123').subscribe(event => {
+     *   console.log(event.type, event.path, event.value);
+     * });
+     * 
+     * // Watch with wildcards
+     * store.watch('/users/*').subscribe(event => {
+     *   console.log('User changed:', event.path);
+     * });
+     * 
+     * // Use async iterator
+     * for await (const event of store.watch('/products/*')) {
+     *   console.log('Product update:', event);
+     * }
+     */
+    watch(path) {
+        if (!this._observables.has(path)) {
+            this._observables.set(path, new Observable(this, path));
+        }
+        return this._observables.get(path);
+    }
+
+    /**
+     * Internal method for native watch binding
+     * @private
+     */
+    _watchNative(path, callback) {
+        // Enable event queue on first watch
+        if (!this._eventQueueEnabled) {
+            binding.enableEventQueue(this.handle);
+            this._eventQueueEnabled = true;
+        }
+        
+        return binding.watch(this.handle, path, callback);
+    }
+
+    /**
+     * Internal method for native unwatch binding
+     * @private
+     */
+    _unwatchNative(subscriptionId) {
+        binding.unwatch(this.handle, subscriptionId);
     }
 }
 

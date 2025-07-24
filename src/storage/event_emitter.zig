@@ -127,8 +127,6 @@ pub const EventEmitter = struct {
 
     /// Emit an event to all matching subscribers
     pub fn emit(self: *EventEmitter, event: Event) !void {
-        std.debug.print("EventEmitter.emit: type={}, path={s}\n", .{event.type, event.path});
-        
         // Create a temporary list of matching subscribers to avoid holding lock during callbacks
         var matching = std.ArrayList(struct { listener: ListenerFn, context: ?*anyopaque }).init(self.allocator);
         defer matching.deinit();
@@ -137,13 +135,14 @@ pub const EventEmitter = struct {
             self.mutex.lock();
             defer self.mutex.unlock();
 
+
             var iter = self.subscriptions.iterator();
             while (iter.next()) |entry| {
                 const sub = entry.value_ptr;
                 
                 // Check if the event path matches the subscription pattern
                 if (try self.pathMatchesSubscription(event.path, sub)) {
-                    std.log.debug("EventEmitter: Found matching subscription for path={s}", .{event.path});
+                    // std.log.debug("EventEmitter: Found matching subscription for path={s}", .{event.path});
                     try matching.append(.{
                         .listener = sub.listener,
                         .context = sub.context,
@@ -152,7 +151,6 @@ pub const EventEmitter = struct {
             }
         }
 
-        std.log.debug("EventEmitter: Calling {} listeners", .{matching.items.len});
         
         // Call listeners outside of the lock
         for (matching.items) |match| {
@@ -203,24 +201,13 @@ pub const EventEmitter = struct {
         new_value: Value,
         old_value: ?Value,
     ) !void {
-        std.debug.print("EventEmitter.emitValueChanged: path={s}\n", .{path});
-        const path_copy = try self.allocator.dupe(u8, path);
-        errdefer self.allocator.free(path_copy);
-
-        var new_val_copy = try new_value.clone(self.allocator);
-        errdefer new_val_copy.deinit(self.allocator);
-
-        var old_val_copy: ?Value = null;
-        if (old_value) |ov| {
-            old_val_copy = try ov.clone(self.allocator);
-        }
-        errdefer if (old_val_copy) |*ov| ov.deinit(self.allocator);
-
+        // For now, skip allocations and use the original data
+        // This is safe because we're calling emit synchronously
         const event = Event{
             .type = .value_changed,
-            .path = path_copy,
-            .value = new_val_copy,
-            .previous_value = old_val_copy,
+            .path = path,
+            .value = new_value,
+            .previous_value = old_value,
             .key = null,
         };
         

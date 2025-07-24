@@ -4,76 +4,65 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 
 ## Features
 
+### Current
 - 🌳 **Tree-structured data** - Intuitive path-based organization
-- ⚡ **Sub-500ms boot time** - Built with Zig for maximum performance  
+- ⚡ **Sub-2ms boot time** - Built with Zig for maximum performance  
 - 🔄 **Real-time subscriptions** - Live updates via Server-Sent Events (SSE)
-- 🔒 **JWT-based auth** - Declarative security rules
-- 💾 **LMDB storage** - ACID compliant, crash-safe
-- 🧪 **100% test coverage** - Reliability first
+- 🔒 **JWT-based auth** - Declarative security rules with cascading
+- 💾 **LMDB storage** - ACID compliant, crash-safe persistence
+- 🧵 **Multi-threading** - Concurrent request handling with thread pool
+- 📦 **Dual deployment** - Server mode or embedded Node.js library
+- 🗜️ **MessagePack** - Efficient binary serialization
 
-## MVP Roadmap
+### Coming Soon
+- 🌐 **Distributed clusters** - Master-slave replication with automatic failover
+- 📱 **Offline support** - Standalone mode for offline-first applications
+- 🔊 **Real-time events in Node.js** - Native event callbacks for embedded mode
+- 📊 **Production logging** - Structured logs with configurable levels
 
-### Phase 1: Core Storage Engine ✅
-- [x] Project structure setup
-- [x] LMDB wrapper with tree operations
-- [x] Path-based key encoding  
-- [x] Basic CRUD operations
-- [x] Unit tests for storage layer
-- [x] Storage integration layer (combine LMDB + tree)
-- [x] JSON value serialization
-- [x] Tree expansion for nested objects
-- [x] Branch node reconstruction
-- [x] Recursive delete with cursor iteration
+## Roadmap
 
-### Phase 2: Real-time Event System & API ✅
-- [x] Event emitter with Observable pattern
-- [x] Server-Sent Events (SSE) for real-time updates
-- [x] HTTP/REST endpoints (GET, PUT, DELETE)
-- [x] Subscription management
-- [x] Path pattern matching for wildcards
-- [x] Event filtering (basic implementation)
-- [x] Basic error handling
-- [x] Unit tests for real-time system
-- [x] Storage integration with event emitter
-- [x] Main server structure
-- [x] Real-time event delivery over SSE
-- [x] Node-specific watching (watch /products, get only product updates)
+### ✅ Completed
+- **Core Storage Engine** - LMDB-backed tree storage with ACID guarantees
+- **Real-time API** - REST endpoints with Server-Sent Events
+- **Security Rules** - Firebase-compatible rule engine with path variables
+- **JWT Authentication** - Token-based auth with role support
+- **Web Dashboard** - Interactive UI for testing and monitoring
+- **Multi-threading** - Thread pool for concurrent request handling
+- **MessagePack** - Binary serialization for 50% size reduction
+- **Dual Architecture** - Server mode and embedded Node.js library
 
-### Phase 3: Demo Web Client ✅
-- [x] Interactive web dashboard (served at /index.html)
-- [x] SSE connection handling with EventSource API
-- [x] Real-time data display with live updates
-- [x] CRUD operations UI (GET, PUT, DELETE)
-- [x] Tree visualization in Data Explorer
-- [x] Live subscription demo with multiple watchers
-- [x] Event log showing all real-time updates
+### 🚧 In Progress
 
-### Phase 4: Authentication & Rules Engine ✅
-- [x] JWT token validation (HS256)
-- [x] Token generation endpoint for testing
-- [x] Auth context in request handlers
-- [x] Web UI authentication integration
-- [x] Rule parser and compiler
-- [x] Rule evaluation engine with cascading
-- [x] Path variable substitution ($userId, etc)
-- [ ] Cross-reference resolution (root.path.to.data)
-- [x] Unit tests for auth
+#### Phase 1: Critical Fixes
+- [ ] **Node.js Real-time Events** - Fix event system for embedded mode
+- [ ] **Production Logging** - Structured logs with levels and audit trail
 
-### Phase 5: Client SDK & DevEx 📦
-- [ ] TypeScript client library
-- [ ] Auto-reconnection logic
-- [ ] Optimistic updates
-- [ ] Offline queue
-- [ ] Developer-friendly error messages
-- [ ] JSON path queries
-- [ ] Batch operations
+#### Phase 2: Distributed Architecture
+- [ ] **Binary Protocol** - Custom TCP protocol for inter-node communication
+- [ ] **Cluster Formation** - Node discovery and gossip protocol
+- [ ] **OpLog Replication** - Change tracking and replay mechanism
+- [ ] **Master-Slave** - Read replicas with automatic sync
+- [ ] **Leader Election** - Raft consensus for automatic failover
 
-### Phase 6: Production Ready 🚀
-- [ ] Docker image (<50MB)
-- [ ] S3 backup integration
-- [ ] Monitoring endpoints
-- [ ] Performance benchmarks
-- [ ] Documentation site
+#### Phase 3: Embedded Modes
+- [ ] **Standalone Mode** - Fully local database for offline apps
+- [ ] **Embedded Replicas** - Read-only mode with cluster connection
+- [ ] **Memory-Only Option** - Pure RAM storage for caching
+- [ ] **Partial Replication** - Subscribe to specific paths only
+
+#### Phase 4: Operations
+- [ ] **CLI Tool** - Cluster management and data operations
+- [ ] **Backup System** - Snapshots and continuous OpLog streaming
+- [ ] **Monitoring** - Metrics, health checks, and alerts
+- [ ] **Migration Tools** - Import/export from other databases
+
+### 🔮 Future
+- **TypeScript SDK** - First-class client library
+- **GraphQL Support** - Alternative query interface
+- **Multi-Region** - Geographic distribution
+- **CRDT Support** - Conflict-free data types
+- **WebAssembly** - Browser-native embedded mode
 
 ## Quick Start
 
@@ -94,23 +83,33 @@ open http://localhost:8889/index.html
 # Build Node.js bindings
 ./build_nodejs.sh
 
-# Use in your Node.js app
+# Install in your project
 cd nodejs-bindings
-npm test
+npm link
+
+# Use in your app
+npm link @elkyn/store
 ```
 
 ```javascript
 const { ElkynStore } = require('@elkyn/store');
 
-const store = new ElkynStore('./data');
+// Standalone mode - fully local
+const localStore = new ElkynStore({ mode: 'standalone' });
+localStore.set('/users/123', { name: 'Alice' });
+
+// Embedded mode - connects to cluster (coming soon)
+const store = new ElkynStore({ 
+  mode: 'embedded',
+  clusterUrl: 'tcp://db.myapp.com:7889'
+});
+
+// With authentication
 store.enableAuth('secret');
 store.setupDefaultRules();
 
 const token = store.createToken('user123');
 store.set('/users/user123/profile', { name: 'Alice' }, token);
-
-const profile = store.get('/users/user123/profile', token);
-console.log(profile); // { name: 'Alice' }
 
 store.close();
 ```
@@ -177,20 +176,51 @@ events.onmessage = (event) => {
 
 ## Architecture
 
+### Current Architecture
+
 ```
-┌─────────────────┐     ┌──────────────┐
-│   Zap HTTP/WS   │────▶│  JWT Auth    │
-└────────┬────────┘     └──────┬───────┘
-         │                     │
-┌────────▼────────┐     ┌──────▼───────┐
-│  Rule Engine    │────▶│ Event System │
-│  (Comptime)     │     │ (Observable) │
-└────────┬────────┘     └──────────────┘
-         │
-┌────────▼────────┐
-│      LMDB       │
-│  (Tree Storage) │
-└─────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Elkyn DB Core (Zig)                      │
+├─────────────────────────────┬───────────────────────────────┤
+│   Server Mode               │   Embedded Mode               │
+│   (@elkyn/realtime-db)      │   (@elkyn/store)             │
+├─────────────────────────────┼───────────────────────────────┤
+│ • HTTP/REST API             │ • Node.js C++ Bindings       │
+│ • Server-Sent Events        │ • Direct Storage Access      │
+│ • Multi-threading           │ • In-Process Operation       │
+│ • Web Dashboard             │ • Zero Network Overhead      │
+└─────────────────────────────┴───────────────────────────────┘
+                              │
+┌─────────────────────────────▼───────────────────────────────┐
+│                    Shared Components                         │
+├─────────────────────────────────────────────────────────────┤
+│ • LMDB Storage Engine       │ • Security Rules Engine      │
+│ • Tree Operations           │ • JWT Authentication         │
+│ • MessagePack Serialization │ • Event System               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Planned Distributed Architecture
+
+```
+┌─────────────┐     OpLog      ┌─────────────┐
+│   Master    │◀──────────────▶│   Slave 1   │
+│  (Primary)  │                 │ (Read Only) │
+└──────┬──────┘                 └─────────────┘
+       │                               │
+       │         Raft Leader           │
+       │          Election             │
+       ▼                               ▼
+┌─────────────┐                 ┌─────────────┐
+│   Slave 2   │                 │  Embedded   │
+│ (Read Only) │                 │   Node.js   │
+└─────────────┘                 └─────────────┘
+
+Features:
+• Automatic failover with Raft consensus
+• OpLog-based replication
+• Read scaling with slave nodes
+• Embedded nodes as read replicas
 ```
 
 ## Contributing
