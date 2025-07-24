@@ -49,12 +49,15 @@ A blazing-fast, real-time tree database with declarative security rules. Think F
 - [x] Event log showing all real-time updates
 
 ### Phase 4: Authentication & Rules Engine 🔒
-- [ ] JWT token validation (RS256/HS256)
+- [x] JWT token validation (HS256)
+- [x] Token generation endpoint for testing
+- [x] Auth context in request handlers
+- [x] Web UI authentication integration
 - [ ] Rule parser and compiler
 - [ ] Rule evaluation engine (comptime optimized)
 - [ ] Path variable substitution ($userId, etc)
 - [ ] Cross-reference resolution (root.path.to.data)
-- [ ] Unit tests for auth & rules
+- [x] Unit tests for auth
 
 ### Phase 5: Client SDK & DevEx 📦
 - [ ] TypeScript client library
@@ -84,6 +87,11 @@ zig build -Doptimize=ReleaseFast
 # Or with default settings (port 8080, ./data directory)
 ./zig-out/bin/elkyn-server
 
+# Run with authentication enabled
+./zig-out/bin/elkyn-server 9000 ./data my-secret-key
+# Or with required authentication
+./zig-out/bin/elkyn-server 9000 ./data my-secret-key require
+
 # Access the web dashboard
 open http://localhost:9000/index.html
 ```
@@ -99,6 +107,25 @@ await fetch('http://localhost:9000/users/123', {
     name: 'Alice',
     email: 'alice@example.com'
   })
+});
+
+// With Authentication
+// First get a token
+const tokenResp = await fetch('http://localhost:9000/auth/token', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ uid: 'user123', email: 'user@example.com' })
+});
+const { token } = await tokenResp.json();
+
+// Use token in requests
+await fetch('http://localhost:9000/users/123', {
+  method: 'PUT',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  },
+  body: JSON.stringify({ name: 'Alice' })
 });
 
 // Subscribe to changes via SSE

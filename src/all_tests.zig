@@ -14,6 +14,12 @@ pub const storage_update_test = @import("storage/storage_update_test.zig");
 pub const storage_cursor_test = @import("storage/storage_cursor_test.zig");
 pub const storage_events_test = @import("storage/storage_events_test.zig");
 
+// Auth tests
+pub const jwt_test = @import("auth/jwt_test.zig");
+
+// API tests
+pub const simple_http_server_auth_test = @import("api/simple_http_server_auth_test.zig");
+
 // Integration tests are run separately via scripts/run_integration_tests.sh
 
 test {
@@ -27,4 +33,6 @@ test {
     _ = storage_update_test;
     _ = storage_cursor_test;
     _ = storage_events_test;
+    _ = jwt_test;
+    _ = simple_http_server_auth_test;
 }

@@ -15,11 +15,17 @@ pub fn main() !void {
     
     const port: u16 = if (args.len > 1) try std.fmt.parseInt(u16, args[1], 10) else 8080;
     const data_dir = if (args.len > 2) args[2] else "./data";
+    const auth_secret = if (args.len > 3) args[3] else null;
+    const require_auth = if (args.len > 4) std.mem.eql(u8, args[4], "require") else false;
     
     // Create data directory
     std.fs.cwd().makePath(data_dir) catch {};
     
     std.debug.print("Starting simple HTTP server on port {d} with data dir: {s}\n", .{port, data_dir});
+    if (auth_secret) |secret| {
+        std.debug.print("Authentication enabled (required: {})\n", .{require_auth});
+        _ = secret;
+    }
     
     // Initialize storage
     var storage = try Storage.init(allocator, data_dir);
@@ -35,6 +41,11 @@ pub fn main() !void {
     // Create and start server
     var server = try SimpleHttpServer.init(allocator, &storage, port);
     defer server.deinit();
+    
+    // Enable authentication if secret provided
+    if (auth_secret) |secret| {
+        try server.enableAuth(secret, require_auth);
+    }
     
     // Subscribe to all events for SSE
     const sse_subscription_id = try event_emitter.subscribe(

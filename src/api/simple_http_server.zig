@@ -2,6 +2,8 @@ const std = @import("std");
 const Storage = @import("../storage/storage.zig").Storage;
 const Value = @import("../storage/value.zig").Value;
 const SSEManager = @import("../realtime/sse_manager.zig").SSEManager;
+const JWT = @import("../auth/jwt.zig").JWT;
+const AuthContext = @import("../auth/context.zig").AuthContext;
 
 const log = std.log.scoped(.simple_http);
 
@@ -12,6 +14,8 @@ pub const SimpleHttpServer = struct {
     storage: *Storage,
     event_emitter: ?*@import("../storage/event_emitter.zig").EventEmitter,
     sse_manager: SSEManager,
+    jwt: ?JWT = null,
+    require_auth: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, storage: *Storage, port: u16) !SimpleHttpServer {
         const address = try std.net.Address.parseIp("127.0.0.1", port);
@@ -39,6 +43,12 @@ pub const SimpleHttpServer = struct {
     
     pub fn setEventEmitter(self: *SimpleHttpServer, emitter: *@import("../storage/event_emitter.zig").EventEmitter) void {
         self.event_emitter = emitter;
+    }
+    
+    pub fn enableAuth(self: *SimpleHttpServer, secret: []const u8, require: bool) !void {
+        self.jwt = JWT.init(self.allocator, secret);
+        self.require_auth = require;
+        log.info("Authentication enabled (required: {})", .{require});
     }
 
     pub fn start(self: *SimpleHttpServer) !void {
@@ -84,6 +94,41 @@ pub const SimpleHttpServer = struct {
         };
     }
 
+    fn extractAuthContext(self: *SimpleHttpServer, request: []const u8) !AuthContext {
+        if (self.jwt == null) {
+            return .{ .authenticated = false };
+        }
+        
+        // Look for Authorization header
+        var lines = std.mem.tokenizeScalar(u8, request, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, "\r");
+            if (std.mem.startsWith(u8, trimmed, "Authorization: Bearer ")) {
+                const token = trimmed["Authorization: Bearer ".len..];
+                
+                // Validate token
+                if (self.jwt) |*jwt| {
+                    var result = jwt.validate(token) catch {
+                        return .{ .authenticated = false };
+                    };
+                    defer result.deinit(self.allocator);
+                    
+                    if (result.valid) {
+                        return AuthContext{
+                            .authenticated = true,
+                            .uid = if (result.claims.uid) |uid| try self.allocator.dupe(u8, uid) else null,
+                            .email = if (result.claims.email) |email| try self.allocator.dupe(u8, email) else null,
+                            .exp = result.claims.exp,
+                            .token = try self.allocator.dupe(u8, token),
+                        };
+                    }
+                }
+            }
+        }
+        
+        return .{ .authenticated = false };
+    }
+    
     fn handleConnection(self: *SimpleHttpServer, connection: std.net.Server.Connection) !void {
         var should_close = true;
         defer if (should_close) connection.stream.close();
@@ -104,6 +149,13 @@ pub const SimpleHttpServer = struct {
         const method = parts.next() orelse return;
         const path = parts.next() orelse return;
         
+        // Extract auth context
+        var auth = self.extractAuthContext(request) catch |err| {
+            log.err("Failed to extract auth context: {}", .{err});
+            return;
+        };
+        defer auth.deinit(self.allocator);
+        
         // Check if this is a browser request to root
         const is_browser = std.mem.indexOf(u8, request, "Accept: text/html") != null;
         if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/") and is_browser) {
@@ -116,6 +168,20 @@ pub const SimpleHttpServer = struct {
                 "\r\n";
             _ = try connection.stream.write(redirect);
             return;
+        }
+        
+        // Special auth endpoints (always allowed)
+        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/auth/token")) {
+            try self.handleCreateToken(connection, request);
+            return;
+        }
+        
+        // Check authentication for protected endpoints
+        if (self.require_auth and !isStaticFileRequest(path) and !std.mem.eql(u8, path, "/")) {
+            if (!auth.isAuthenticated()) {
+                try self.sendResponse(connection, 401, "Unauthorized", "Authentication required");
+                return;
+            }
         }
         
         // Route request
@@ -134,18 +200,19 @@ pub const SimpleHttpServer = struct {
                 try self.handleStaticFile(connection, path);
             } else {
                 // All other GET requests are API calls
-                try self.handleGet(connection, path);
+                try self.handleGet(connection, path, auth);
             }
         } else if (std.mem.eql(u8, method, "PUT")) {
-            try self.handlePut(connection, path, request);
+            try self.handlePut(connection, path, request, auth);
         } else if (std.mem.eql(u8, method, "DELETE")) {
-            try self.handleDelete(connection, path);
+            try self.handleDelete(connection, path, auth);
         } else {
             try self.sendResponse(connection, 405, "Method Not Allowed", "");
         }
     }
     
-    fn handleGet(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8) !void {
+    fn handleGet(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
+        _ = auth; // TODO: Use for access control
         var value = self.storage.get(path) catch |err| {
             if (err == error.NotFound) {
                 try self.sendResponse(connection, 404, "Not Found", "");
@@ -167,7 +234,8 @@ pub const SimpleHttpServer = struct {
         try self.sendJsonResponse(connection, 200, "OK", json);
     }
     
-    fn handlePut(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, request: []const u8) !void {
+    fn handlePut(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, request: []const u8, auth: AuthContext) !void {
+        _ = auth; // TODO: Use for access control
         // Find body
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse std.mem.indexOf(u8, request, "\n\n") orelse {
             try self.sendResponse(connection, 400, "Bad Request", "");
@@ -198,7 +266,8 @@ pub const SimpleHttpServer = struct {
         try self.sendResponse(connection, 200, "OK", "");
     }
     
-    fn handleDelete(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8) !void {
+    fn handleDelete(self: *SimpleHttpServer, connection: std.net.Server.Connection, path: []const u8, auth: AuthContext) !void {
+        _ = auth; // TODO: Use for access control
         self.storage.delete(path) catch |err| {
             if (err == error.NotFound) {
                 try self.sendResponse(connection, 404, "Not Found", "");
@@ -326,6 +395,75 @@ pub const SimpleHttpServer = struct {
             std.time.sleep(1 * std.time.ns_per_s);
             // Check if connection is still alive by trying to write empty string
             _ = connection.stream.write("") catch break;
+        }
+    }
+    
+    fn handleCreateToken(self: *SimpleHttpServer, connection: std.net.Server.Connection, request: []const u8) !void {
+        // Only allow if auth is enabled
+        if (self.jwt == null) {
+            try self.sendResponse(connection, 404, "Not Found", "");
+            return;
+        }
+        
+        // Find body
+        const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse std.mem.indexOf(u8, request, "\n\n") orelse {
+            try self.sendResponse(connection, 400, "Bad Request", "");
+            return;
+        };
+        
+        const body = if (std.mem.indexOf(u8, request, "\r\n\r\n")) |idx|
+            request[idx + 4 ..]
+        else
+            request[body_start + 2 ..];
+        
+        // Parse request body
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
+            try self.sendResponse(connection, 400, "Bad Request", "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        // Extract uid and email
+        const uid = if (parsed.value.object.get("uid")) |v| 
+            (if (v == .string) v.string else null)
+        else null;
+        
+        const email = if (parsed.value.object.get("email")) |v|
+            (if (v == .string) v.string else null)
+        else null;
+        
+        if (uid == null) {
+            try self.sendResponse(connection, 400, "Bad Request", "uid is required");
+            return;
+        }
+        
+        // Create claims
+        const claims = @import("../auth/jwt.zig").Claims{
+            .uid = uid,
+            .email = email,
+            .iat = std.time.timestamp(),
+            .exp = std.time.timestamp() + 3600, // 1 hour
+        };
+        
+        // Generate token
+        if (self.jwt) |*jwt| {
+            const token = jwt.create(claims) catch {
+                try self.sendResponse(connection, 500, "Internal Server Error", "");
+                return;
+            };
+            defer self.allocator.free(token);
+            
+            // Create response
+            var response_obj = std.json.ObjectMap.init(self.allocator);
+            defer response_obj.deinit();
+            try response_obj.put("token", .{ .string = token });
+            try response_obj.put("expires_in", .{ .integer = 3600 });
+            
+            const response_value = std.json.Value{ .object = response_obj };
+            const response_json = try std.json.stringifyAlloc(self.allocator, response_value, .{});
+            defer self.allocator.free(response_json);
+            
+            try self.sendJsonResponse(connection, 200, "OK", response_json);
         }
     }
 };

@@ -300,6 +300,35 @@
             <div id="treeView" class="tree-view"></div>
         </div>
 
+        <!-- Authentication Panel -->
+        <div class="panel" style="margin-top: 20px;">
+            <h2>Authentication</h2>
+            
+            <div id="authStatus" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                <strong>Status:</strong> <span id="authStatusText">No token</span>
+            </div>
+            
+            <div class="form-group">
+                <label for="authUid">User ID:</label>
+                <input type="text" id="authUid" placeholder="user123" value="test-user">
+            </div>
+            
+            <div class="form-group">
+                <label for="authEmail">Email (optional):</label>
+                <input type="email" id="authEmail" placeholder="user@example.com" value="test@example.com">
+            </div>
+            
+            <div class="button-group">
+                <button onclick="generateToken()">Generate Token</button>
+                <button class="secondary" onclick="clearToken()">Clear Token</button>
+            </div>
+            
+            <div id="tokenDisplay" style="display: none; margin-top: 15px;">
+                <label>Current Token:</label>
+                <textarea id="currentToken" readonly style="width: 100%; height: 60px; font-family: monospace; font-size: 12px;"></textarea>
+            </div>
+        </div>
+
         <!-- Quick Actions Panel -->
         <div class="panel" style="margin-top: 20px;">
             <h2>Quick Actions</h2>
@@ -316,6 +345,16 @@
     <script>
         let eventSources = [];
         let eventCounter = 0;
+        let authToken = null;
+
+        // Check for stored token on load
+        window.addEventListener('load', () => {
+            const storedToken = localStorage.getItem('elkyn_auth_token');
+            if (storedToken) {
+                authToken = storedToken;
+                updateAuthStatus();
+            }
+        });
 
         function log(message, type = 'info') {
             const eventLog = document.getElementById('eventLog');
@@ -337,6 +376,72 @@
             responseDiv.style.display = 'block';
             responseDiv.style.color = isError ? '#e74c3c' : '#27ae60';
             responseDiv.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        }
+
+        function updateAuthStatus() {
+            const statusText = document.getElementById('authStatusText');
+            const tokenDisplay = document.getElementById('tokenDisplay');
+            const currentTokenField = document.getElementById('currentToken');
+            
+            if (authToken) {
+                statusText.textContent = 'Token active';
+                statusText.style.color = '#27ae60';
+                tokenDisplay.style.display = 'block';
+                currentTokenField.value = authToken;
+            } else {
+                statusText.textContent = 'No token';
+                statusText.style.color = '#e74c3c';
+                tokenDisplay.style.display = 'none';
+                currentTokenField.value = '';
+            }
+        }
+
+        async function generateToken() {
+            const uid = document.getElementById('authUid').value;
+            const email = document.getElementById('authEmail').value;
+            
+            if (!uid) {
+                alert('User ID is required');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/auth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ uid, email })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    authToken = data.token;
+                    localStorage.setItem('elkyn_auth_token', authToken);
+                    updateAuthStatus();
+                    log('Token generated successfully', 'success');
+                } else {
+                    const error = await response.text();
+                    log(`Failed to generate token: ${error}`, 'error');
+                }
+            } catch (err) {
+                log(`Error generating token: ${err.message}`, 'error');
+            }
+        }
+
+        function clearToken() {
+            authToken = null;
+            localStorage.removeItem('elkyn_auth_token');
+            updateAuthStatus();
+            log('Token cleared', 'info');
+        }
+
+        function getAuthHeaders() {
+            const headers = {};
+            if (authToken) {
+                headers['Authorization'] = `Bearer ${authToken}`;
+            }
+            return headers;
         }
 
         async function getValue() {
@@ -365,7 +470,7 @@
             try {
                 const response = await fetch(path, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: value
                 });
                 
@@ -386,7 +491,7 @@
             const path = document.getElementById('path').value;
             
             try {
-                const response = await fetch(path, { method: 'DELETE' });
+                const response = await fetch(path, { method: 'DELETE', headers: getAuthHeaders() });
                 
                 if (response.ok) {
                     showResponse('Value deleted successfully');
@@ -470,7 +575,7 @@
         async function exploreData() {
             const path = document.getElementById('explorePath').value;
             try {
-                const response = await fetch(path);
+                const response = await fetch(path, { headers: getAuthHeaders() });
                 const data = await response.text();
                 
                 if (response.ok) {
