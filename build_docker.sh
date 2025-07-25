@@ -46,18 +46,16 @@ WORKDIR /build
 COPY . .
 
 # Find LMDB and build
-RUN sh -c 'pkg-config --libs --cflags lmdb && \
-    find /usr -name "liblmdb.so" 2>/dev/null || true && \
-    find /usr -name "liblmdb.a" 2>/dev/null || true && \
-    ls -la /usr/include/ | grep lmdb || true && \
-    if [ -f /usr/lib/${LIB_ARCH}/liblmdb.so ]; then \
-        ln -sf /usr/lib/${LIB_ARCH}/liblmdb.so /usr/lib/liblmdb.so || true; \
-        ln -sf /usr/lib/${LIB_ARCH}/liblmdb.a /usr/lib/liblmdb.a 2>/dev/null || true; \
-    fi && \
-    export LIBRARY_PATH=/usr/lib/${LIB_ARCH}:/usr/lib && \
-    export C_INCLUDE_PATH=/usr/include && \
-    export PKG_CONFIG_PATH=/usr/lib/${LIB_ARCH}/pkgconfig && \
-    zig build -Doptimize=ReleaseFast'
+RUN echo "Setting up LMDB for ${LIB_ARCH}..." && \\
+    pkg-config --libs --cflags lmdb && \\
+    find /usr/lib -name "liblmdb*" && \\
+    ln -sf /usr/lib/${LIB_ARCH}/liblmdb.so /usr/lib/liblmdb.so && \\
+    ln -sf /usr/lib/${LIB_ARCH}/liblmdb.a /usr/lib/liblmdb.a && \\
+    ls -la /usr/lib/liblmdb* && \\
+    export LIBRARY_PATH=/usr/lib/${LIB_ARCH}:/usr/lib && \\
+    export C_INCLUDE_PATH=/usr/include && \\
+    export PKG_CONFIG_PATH=/usr/lib/${LIB_ARCH}/pkgconfig && \\
+    zig build -Doptimize=ReleaseFast
 EOF
 }
 
