@@ -25,7 +25,7 @@ build_native() {
     
     # Build Zig static library
     cd "$BASE_DIR"
-    zig build -Doptimize=ReleaseFast
+    zig build lib-static -Doptimize=ReleaseFast
     
     # Build Node.js module
     cd "$BINDINGS_DIR"
@@ -72,8 +72,8 @@ RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz |
 WORKDIR /build
 COPY . .
 
-# Build Zig library
-RUN zig build -Doptimize=ReleaseFast
+# Build Zig static library for Node.js
+RUN zig build lib-static -Doptimize=ReleaseFast
 
 # Build Node.js module
 WORKDIR /build/nodejs-bindings

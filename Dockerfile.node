@@ -19,8 +19,8 @@ RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz |
 WORKDIR /build
 COPY . .
 
-# Build Zig static library for Node.js
-RUN zig build lib-static -Doptimize=ReleaseFast
+# Build Zig library
+RUN zig build -Doptimize=ReleaseFast
 
 # Build Node.js module
 WORKDIR /build/nodejs-bindings
