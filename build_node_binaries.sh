@@ -23,9 +23,9 @@ build_native() {
     local SUFFIX=$1
     echo -e "${BLUE}Building Node.js module for $SUFFIX...${NC}"
     
-    # Build Zig static library
+    # Build Zig library (includes static library)
     cd "$BASE_DIR"
-    zig build lib-static -Doptimize=ReleaseFast
+    zig build -Doptimize=ReleaseFast
     
     # Build Node.js module
     cd "$BINDINGS_DIR"
@@ -72,8 +72,8 @@ RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz |
 WORKDIR /build
 COPY . .
 
-# Build Zig static library for Node.js
-RUN zig build lib-static -Doptimize=ReleaseFast
+# Build Zig library (includes static library)
+RUN zig build -Doptimize=ReleaseFast
 
 # Build Node.js module
 WORKDIR /build/nodejs-bindings
