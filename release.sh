@@ -35,16 +35,23 @@ fi
 # Step 3: Create and push tag
 echo ""
 echo -e "${BLUE}Step 3: Create git tag${NC}"
-read -p "Create and push tag $VERSION_WITH_V? (y/N) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    git tag -a "$VERSION_WITH_V" -m "Release $VERSION_WITH_V"
-    git push origin main
-    git push origin "$VERSION_WITH_V"
-    echo -e "${GREEN}✓ Created and pushed tag${NC}"
+
+# Check if tag already exists
+if git rev-parse "$VERSION_WITH_V" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Tag $VERSION_WITH_V already exists${NC}"
+    echo -e "${GREEN}✓ Using existing tag${NC}"
 else
-    echo -e "${RED}Cannot proceed without tag${NC}"
-    exit 1
+    read -p "Create and push tag $VERSION_WITH_V? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        git tag -a "$VERSION_WITH_V" -m "Release $VERSION_WITH_V"
+        git push origin main
+        git push origin "$VERSION_WITH_V"
+        echo -e "${GREEN}✓ Created and pushed tag${NC}"
+    else
+        echo -e "${RED}Cannot proceed without tag${NC}"
+        exit 1
+    fi
 fi
 
 # Step 4: Build and create GitHub release
