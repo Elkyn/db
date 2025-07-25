@@ -6,14 +6,14 @@
         "src/elkyn_binding.cc"
       ],
       "include_dirs": [
-        "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'include')\")"
+        "../../zig-out/include"
       ],
       "conditions": [
         [
           "OS=='mac'",
           {
             "libraries": [
-              "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'lib', 'libelkyn-embedded-static.a')\")",
+              "../../zig-out/lib/libelkyn-embedded-static.a",
               "-llmdb"
             ],
             "include_dirs": [
@@ -36,7 +36,7 @@
           "OS=='linux'",
           {
             "libraries": [
-              "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'lib', 'libelkyn-embedded-static.a')\")",
+              "../../zig-out/lib/libelkyn-embedded-static.a",
               "-llmdb"
             ],
             "cflags": [
