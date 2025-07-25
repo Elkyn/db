@@ -79,43 +79,19 @@ pub const Path = struct {
     }
 };
 
-/// Normalize a path by removing trailing slashes and validating format
+/// Normalize a path - minimal version for performance
 pub fn normalizePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (path.len == 0 or path[0] != PATH_SEPARATOR) {
         return error.InvalidPath;
     }
     
-    // Root path is already normalized
-    if (std.mem.eql(u8, path, "/")) {
-        return try allocator.dupe(u8, path);
+    // For most paths, just return as-is (no allocation!)
+    if (path.len == 1 or path[path.len - 1] != PATH_SEPARATOR) {
+        return path; // No copy needed!
     }
     
-    // Build normalized path by removing double slashes and trailing slash
-    var normalized = std.ArrayList(u8).init(allocator);
-    defer normalized.deinit();
-    
-    // Always start with /
-    try normalized.append(PATH_SEPARATOR);
-    
-    // Tokenize and rebuild without empty segments
-    var iter = std.mem.tokenizeScalar(u8, path[1..], PATH_SEPARATOR);
-    var first = true;
-    while (iter.next()) |segment| {
-        if (segment.len == 0) continue; // Skip empty segments (double slashes)
-        
-        if (!first) {
-            try normalized.append(PATH_SEPARATOR);
-        }
-        try normalized.appendSlice(segment);
-        first = false;
-    }
-    
-    // If we only have "/" return it
-    if (normalized.items.len == 1) {
-        return try allocator.dupe(u8, "/");
-    }
-    
-    return try normalized.toOwnedSlice();
+    // Only allocate if we need to remove trailing slash
+    return try allocator.dupe(u8, path[0..path.len - 1]);
 }
 
 /// Check if a path matches a pattern with wildcards

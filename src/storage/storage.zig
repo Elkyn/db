@@ -96,7 +96,8 @@ pub const Storage = struct {
     pub fn set(self: *Storage, path: []const u8, value: Value) !void {
         // Validate and normalize path
         const normalized = try tree.normalizePath(self.allocator, path);
-        defer self.allocator.free(normalized);
+        const should_free = normalized.ptr != path.ptr; // Only free if we allocated
+        defer if (should_free) self.allocator.free(normalized);
 
         // Phase 3A Optimization: Conditional event emission
         // Only fetch old value when events are actually needed
@@ -245,16 +246,37 @@ pub const Storage = struct {
                 try db.put(path, array_meta);
             },
             else => {
-                // For primitive values, store directly using MessagePack
-                var value_copy = value;
-                const msgpack = value_copy.toMessagePack(self.allocator) catch |err| {
-                    return err;
-                };
-                defer self.allocator.free(msgpack);
-                
-                db.put(path, msgpack) catch |err| {
-                    return err;
-                };
+                // For primitive values, use type-prefixed raw storage
+                switch (value) {
+                    .string => |s| {
+                        // Type prefix (1 byte) + raw UTF-8 string
+                        var buffer = try self.allocator.alloc(u8, 1 + s.len);
+                        defer self.allocator.free(buffer);
+                        buffer[0] = 's'; // String type marker
+                        @memcpy(buffer[1..], s);
+                        try db.put(path, buffer);
+                    },
+                    .number => |n| {
+                        // Type prefix (1 byte) + 8 bytes for f64
+                        var buffer: [9]u8 = undefined;
+                        buffer[0] = 'n'; // Number type marker
+                        @memcpy(buffer[1..9], std.mem.asBytes(&n));
+                        try db.put(path, &buffer);
+                    },
+                    .boolean => |b| {
+                        // Type prefix (1 byte) + 1 byte for bool
+                        var buffer: [2]u8 = undefined;
+                        buffer[0] = 'b'; // Boolean type marker
+                        buffer[1] = if (b) 1 else 0;
+                        try db.put(path, &buffer);
+                    },
+                    .null => {
+                        // Just type prefix for null
+                        var buffer: [1]u8 = .{'z'}; // Null type marker
+                        try db.put(path, &buffer);
+                    },
+                    else => unreachable, // Arrays/objects handled above
+                }
             }
         }
     }
@@ -263,7 +285,8 @@ pub const Storage = struct {
     pub fn get(self: *Storage, path: []const u8) !Value {
         // Validate and normalize path
         const normalized = try tree.normalizePath(self.allocator, path);
-        defer self.allocator.free(normalized);
+        const should_free = normalized.ptr != path.ptr;
+        defer if (should_free) self.allocator.free(normalized);
 
         // Read from LMDB
         var txn = try self.env.beginTxn(true);
@@ -293,8 +316,33 @@ pub const Storage = struct {
             return try self.reconstructArray(&db, normalized, len);
         }
 
-        // Otherwise, deserialize MessagePack to Value
-        return Value.fromMessagePack(self.allocator, data) catch return error.DeserializationFailed;
+        // Otherwise, deserialize based on type prefix
+        if (data.len == 0) return error.DeserializationFailed;
+        
+        return switch (data[0]) {
+            's' => blk: {
+                // String: type + UTF-8 bytes
+                const str = try self.allocator.dupe(u8, data[1..]);
+                break :blk Value{ .string = str };
+            },
+            'n' => blk: {
+                // Number: type + 8 bytes
+                if (data.len != 9) return error.DeserializationFailed;
+                var num: f64 = undefined;
+                @memcpy(std.mem.asBytes(&num), data[1..9]);
+                break :blk Value{ .number = num };
+            },
+            'b' => blk: {
+                // Boolean: type + 1 byte
+                if (data.len != 2) return error.DeserializationFailed;
+                break :blk Value{ .boolean = data[1] != 0 };
+            },
+            'z' => Value{ .null = {} }, // Null
+            else => {
+                // Unknown format, try MessagePack for backwards compatibility
+                return Value.fromMessagePack(self.allocator, data) catch return error.DeserializationFailed;
+            }
+        };
     }
 
     fn reconstructObject(self: *Storage, db: *lmdb.Database, path: []const u8) StorageError!Value {
@@ -391,9 +439,31 @@ pub const Storage = struct {
             const len_str = value["__array__:".len..];
             const len = std.fmt.parseInt(usize, len_str, 10) catch return error.DeserializationFailed;
             return try self.reconstructArray(db, key, len);
+        } else if (value.len > 0) {
+            // Parse based on type prefix
+            return switch (value[0]) {
+                's' => blk: {
+                    const str = try self.allocator.dupe(u8, value[1..]);
+                    break :blk Value{ .string = str };
+                },
+                'n' => blk: {
+                    if (value.len != 9) return error.DeserializationFailed;
+                    var num: f64 = undefined;
+                    @memcpy(std.mem.asBytes(&num), value[1..9]);
+                    break :blk Value{ .number = num };
+                },
+                'b' => blk: {
+                    if (value.len != 2) return error.DeserializationFailed;
+                    break :blk Value{ .boolean = value[1] != 0 };
+                },
+                'z' => Value{ .null = {} },
+                else => {
+                    // Fallback to MessagePack
+                    return Value.fromMessagePack(self.allocator, value) catch return error.DeserializationFailed;
+                }
+            };
         } else {
-            // Parse as MessagePack value
-            return Value.fromMessagePack(self.allocator, value) catch return error.DeserializationFailed;
+            return error.DeserializationFailed;
         }
     }
 
@@ -443,7 +513,8 @@ pub const Storage = struct {
     pub fn delete(self: *Storage, path: []const u8) !void {
         // Validate and normalize path
         const normalized = try tree.normalizePath(self.allocator, path);
-        defer self.allocator.free(normalized);
+        const should_free = normalized.ptr != path.ptr;
+        defer if (should_free) self.allocator.free(normalized);
 
         // Phase 3A Optimization: Conditional event emission
         // Only fetch old value when events are actually needed
@@ -607,7 +678,8 @@ pub const Storage = struct {
     pub fn list(self: *Storage, parent_path: []const u8) ![][]const u8 {
         // Normalize parent path
         const normalized = try tree.normalizePath(self.allocator, parent_path);
-        defer self.allocator.free(normalized);
+        const should_free = normalized.ptr != parent_path.ptr;
+        defer if (should_free) self.allocator.free(normalized);
 
         var keys = std.ArrayList([]const u8).init(self.allocator);
         errdefer {
@@ -652,5 +724,31 @@ pub const Storage = struct {
         var value = result;
         defer value.deinit(self.allocator);
         return true;
+    }
+    
+    /// Get raw data from storage without deserialization (for zero-copy reads)
+    pub fn getRaw(self: *Storage, path: []const u8) ![]const u8 {
+        // Validate and normalize path
+        const normalized = try tree.normalizePath(self.allocator, path);
+        const should_free = normalized.ptr != path.ptr;
+        defer if (should_free) self.allocator.free(normalized);
+
+        // Read from LMDB
+        var txn = try self.env.beginTxn(true);
+        defer txn.deinit();
+
+        var db = try txn.openDatabase(null);
+        return db.get(normalized) catch |err| {
+            if (err == error.NotFound) {
+                // Check if this path has children (might be an object)
+                const has_children = self.hasAnyChild(&db, normalized);
+                if (has_children) {
+                    // For objects, return a marker
+                    return "o"; // Object marker
+                }
+                return error.NotFound;
+            }
+            return err;
+        };
     }
 };

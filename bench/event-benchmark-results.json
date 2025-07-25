@@ -1,0 +1,24 @@
+{
+  "latency": {
+    "min": 0,
+    "max": 8,
+    "avg": 3.737,
+    "p50": 4,
+    "p95": 7,
+    "p99": 7
+  },
+  "throughput": {
+    "single": 15047,
+    "multiple": 3524,
+    "filtered": 7713
+  },
+  "comparison": {
+    "node": 47619048,
+    "elkyn": 0
+  },
+  "memory": {
+    "heap": 0.5785903930664062,
+    "external": 0,
+    "perSub": 606.696
+  }
+}

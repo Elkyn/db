@@ -2,6 +2,7 @@ const std = @import("std");
 const Storage = @import("storage/storage.zig").Storage;
 const EventEmitter = @import("storage/event_emitter.zig").EventEmitter;
 const EventQueue = @import("embedded/event_queue.zig").EventQueue;
+const WriteQueue = @import("embedded/write_queue.zig").WriteQueue;
 const Value = @import("storage/value.zig").Value;
 const RulesEngine = @import("rules/engine.zig").RulesEngine;
 const JWT = @import("auth/jwt.zig").JWT;
@@ -15,6 +16,7 @@ pub const ElkynDB = struct {
     storage: Storage,
     event_emitter: *EventEmitter,
     event_queue: ?*EventQueue = null,
+    write_queue: ?*WriteQueue = null,
     rules_engine: ?RulesEngine = null,
     jwt: ?JWT = null,
 
@@ -25,6 +27,7 @@ pub const ElkynDB = struct {
             .storage = undefined,
             .event_emitter = undefined,
             .event_queue = null,
+            .write_queue = null,
             .rules_engine = null,
             .jwt = null,
         };
@@ -45,6 +48,10 @@ pub const ElkynDB = struct {
     pub fn deinit(self: *ElkynDB) void {
         if (self.rules_engine) |*engine| {
             engine.deinit();
+        }
+        if (self.write_queue) |queue| {
+            queue.deinit();
+            self.allocator.destroy(queue);
         }
         if (self.event_queue) |queue| {
             // TODO: Unsubscribe from event emitter
@@ -222,6 +229,53 @@ pub const ElkynDB = struct {
         }
         
         return error.AuthNotEnabled;
+    }
+    
+    /// Enable write queue for async writes
+    pub fn enableWriteQueue(self: *ElkynDB) !void {
+        if (self.write_queue != null) return; // Already enabled
+        
+        const queue = try self.allocator.create(WriteQueue);
+        queue.* = try WriteQueue.init(self.allocator, self);
+        self.write_queue = queue;
+        
+        try queue.start();
+    }
+    
+    /// Async set - returns immediately, write happens in background
+    pub fn setAsync(self: *ElkynDB, path: []const u8, value: Value, auth: ?*const AuthContext) !u64 {
+        // Check rules if enabled
+        if (self.rules_engine) |*engine| {
+            const auth_ctx = auth orelse &AuthContext{ .authenticated = false };
+            const allowed = try engine.canWrite(path, auth_ctx, value);
+            if (!allowed) {
+                return error.AccessDenied;
+            }
+        }
+        
+        const queue = self.write_queue orelse return error.WriteQueueNotEnabled;
+        return try queue.pushWrite(path, value);
+    }
+    
+    /// Async delete - returns immediately, delete happens in background
+    pub fn deleteAsync(self: *ElkynDB, path: []const u8, auth: ?*const AuthContext) !u64 {
+        // Check rules if enabled
+        if (self.rules_engine) |*engine| {
+            const auth_ctx = auth orelse &AuthContext{ .authenticated = false };
+            const allowed = try engine.canWrite(path, auth_ctx, null);
+            if (!allowed) {
+                return error.AccessDenied;
+            }
+        }
+        
+        const queue = self.write_queue orelse return error.WriteQueueNotEnabled;
+        return try queue.pushDelete(path);
+    }
+    
+    /// Wait for async write to complete
+    pub fn waitForWrite(self: *ElkynDB, id: u64) !void {
+        const queue = self.write_queue orelse return error.WriteQueueNotEnabled;
+        return try queue.waitForWrite(id);
     }
 };
 
@@ -413,6 +467,77 @@ export fn elkyn_get_binary(db: *ElkynDB, path: [*:0]const u8, length: *usize, to
     return result.ptr;
 }
 
+// Zero-copy read info structure
+pub const ReadInfo = extern struct {
+    data: [*]const u8,
+    length: usize,
+    type_tag: u8, // 's' = string, 'n' = number, 'b' = bool, 'z' = null, 'm' = msgpack
+    needs_free: bool,
+};
+
+// Zero-copy read for primitives
+export fn elkyn_get_raw(db: *ElkynDB, path: [*:0]const u8, info: *ReadInfo, token: ?[*:0]const u8) c_int {
+    const path_str = std.mem.span(path);
+    
+    var auth_ctx: ?AuthContext = null;
+    defer if (auth_ctx) |*ctx| ctx.deinit(db.allocator);
+    
+    if (token) |t| {
+        auth_ctx = db.validateToken(std.mem.span(t)) catch return -2;
+    }
+    
+    // Get raw data from storage
+    const raw_data = db.storage.getRaw(path_str) catch return -1;
+    
+    if (raw_data.len == 0) return -1;
+    
+    // Check type and return appropriate info
+    switch (raw_data[0]) {
+        's' => {
+            // String - can return zero-copy
+            info.data = raw_data.ptr + 1;
+            info.length = raw_data.len - 1;
+            info.type_tag = 's';
+            info.needs_free = false;
+        },
+        'n' => {
+            // Number - return raw bytes
+            info.data = raw_data.ptr;
+            info.length = raw_data.len;
+            info.type_tag = 'n';
+            info.needs_free = false;
+        },
+        'b', 'z' => {
+            // Boolean/null - return as-is
+            info.data = raw_data.ptr;
+            info.length = raw_data.len;
+            info.type_tag = raw_data[0];
+            info.needs_free = false;
+        },
+        else => {
+            // Complex type - need to serialize
+            var value = db.get(path_str, if (auth_ctx) |*ctx| ctx else null) catch return -1;
+            defer value.deinit(db.allocator);
+            
+            const msgpack = value.toMessagePack(db.allocator) catch return -1;
+            const result = std.heap.c_allocator.alloc(u8, msgpack.len) catch {
+                db.allocator.free(msgpack);
+                return -1;
+            };
+            
+            @memcpy(result, msgpack);
+            db.allocator.free(msgpack);
+            
+            info.data = result.ptr;
+            info.length = result.len;
+            info.type_tag = 'm';
+            info.needs_free = true;
+        }
+    }
+    
+    return 0;
+}
+
 // Event Queue exports
 export fn elkyn_enable_event_queue(db: *ElkynDB) c_int {
     // std.debug.print("elkyn_enable_event_queue: db at {*}\n", .{db});
@@ -465,4 +590,48 @@ export fn elkyn_event_queue_pop_batch(db: *ElkynDB, buffer: [*]C_EventData, max_
 export fn elkyn_event_queue_pending(db: *ElkynDB) usize {
     const queue = db.event_queue orelse return 0;
     return queue.pending();
+}
+
+// Write queue exports
+export fn elkyn_enable_write_queue(db: *ElkynDB) c_int {
+    db.enableWriteQueue() catch return -1;
+    return 0;
+}
+
+export fn elkyn_set_async(db: *ElkynDB, path: [*:0]const u8, data: [*]const u8, length: usize, token: ?[*:0]const u8) u64 {
+    const path_str = std.mem.span(path);
+    const data_slice = data[0..length];
+    
+    var auth_ctx: ?AuthContext = null;
+    defer if (auth_ctx) |*ctx| ctx.deinit(db.allocator);
+    
+    if (token) |t| {
+        auth_ctx = db.validateToken(std.mem.span(t)) catch return 0; // 0 = error
+    }
+    
+    // Deserialize MessagePack directly
+    var val = Value.fromMessagePack(db.allocator, data_slice) catch return 0;
+    defer val.deinit(db.allocator);
+    
+    const id = db.setAsync(path_str, val, if (auth_ctx) |*ctx| ctx else null) catch return 0;
+    return id;
+}
+
+export fn elkyn_delete_async(db: *ElkynDB, path: [*:0]const u8, token: ?[*:0]const u8) u64 {
+    const path_str = std.mem.span(path);
+    
+    var auth_ctx: ?AuthContext = null;
+    defer if (auth_ctx) |*ctx| ctx.deinit(db.allocator);
+    
+    if (token) |t| {
+        auth_ctx = db.validateToken(std.mem.span(t)) catch return 0; // 0 = error
+    }
+    
+    const id = db.deleteAsync(path_str, if (auth_ctx) |*ctx| ctx else null) catch return 0;
+    return id;
+}
+
+export fn elkyn_wait_for_write(db: *ElkynDB, id: u64) c_int {
+    db.waitForWrite(id) catch return -1;
+    return 0;
 }

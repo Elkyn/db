@@ -127,6 +127,64 @@ class ElkynStore {
             this.handle = null;
         }
     }
+    
+    /**
+     * Enable write queue for async operations
+     * @returns {boolean} success
+     */
+    enableWriteQueue() {
+        const result = binding.enableWriteQueue(this.handle);
+        return result === 0;
+    }
+    
+    /**
+     * Set data asynchronously
+     * @param {string} path - Data path
+     * @param {any} value - Value to store
+     * @param {string} [token] - Optional JWT token for auth
+     * @returns {string} Write ID for tracking
+     */
+    setAsync(path, value, token = null) {
+        const packed = pack(value);
+        const id = binding.setBinaryAsync(this.handle, path, packed, token);
+        if (!id || id === "0") {
+            throw new Error('Failed to queue write operation');
+        }
+        return id;
+    }
+    
+    /**
+     * Delete data asynchronously
+     * @param {string} path - Data path
+     * @param {string} [token] - Optional JWT token for auth
+     * @returns {string} Write ID for tracking
+     */
+    deleteAsync(path, token = null) {
+        const id = binding.deleteAsync(this.handle, path, token);
+        if (!id || id === "0") {
+            throw new Error('Failed to queue delete operation');
+        }
+        return id;
+    }
+    
+    /**
+     * Wait for async write to complete
+     * @param {string} writeId - Write ID from setAsync/deleteAsync
+     * @returns {Promise<void>}
+     */
+    async waitForWrite(writeId) {
+        return new Promise((resolve, reject) => {
+            // Use setImmediate to avoid blocking
+            setImmediate(() => {
+                const result = binding.waitForWrite(this.handle, writeId);
+                if (result === 0) {
+                    resolve();
+                } else {
+                    reject(new Error('Write operation failed'));
+                }
+            });
+        });
+    }
 
     /**
      * Set a MessagePack value at path
@@ -141,21 +199,35 @@ class ElkynStore {
     }
 
     /**
+     * Get raw value (zero-copy for primitives)
+     * @param {string} path - Data path
+     * @param {string} [token] - Optional JWT token for auth
+     * @returns {any} Value or null
+     */
+    getRaw(path, token = null) {
+        const result = binding.getRaw(this.handle, path, token);
+        
+        // If it's a Buffer (complex type), unpack it
+        if (Buffer.isBuffer(result)) {
+            try {
+                return unpack(result);
+            } catch (error) {
+                return null;
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
      * Get and parse MessagePack value from path
      * @param {string} path - Data path
      * @param {string} [token] - Optional JWT token for auth
      * @returns {any} parsed value or null
      */
     get(path, token = null) {
-        const binaryData = this.getBinary(path, token);
-        if (binaryData === null) return null;
-        
-        try {
-            return unpack(binaryData);
-        } catch (error) {
-            // Fallback - shouldn't happen with MessagePack
-            return null;
-        }
+        // Use zero-copy getRaw for better performance
+        return this.getRaw(path, token);
     }
 
     /**

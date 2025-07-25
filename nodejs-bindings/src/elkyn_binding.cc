@@ -24,6 +24,15 @@ extern "C" {
     char* elkyn_create_token(ElkynDB* db, const char* uid, const char* email);
     void elkyn_free_string(char* ptr);
     
+    // Zero-copy read
+    struct ReadInfo {
+        const uint8_t* data;
+        size_t length;
+        uint8_t type_tag;
+        bool needs_free;
+    };
+    int elkyn_get_raw(ElkynDB* db, const char* path, ReadInfo* info, const char* token);
+    
     // Event queue functions
     int elkyn_enable_event_queue(ElkynDB* db);
     
@@ -37,6 +46,12 @@ extern "C" {
     
     size_t elkyn_event_queue_pop_batch(ElkynDB* db, C_EventData* buffer, size_t max_count);
     size_t elkyn_event_queue_pending(ElkynDB* db);
+    
+    // Write queue functions
+    int elkyn_enable_write_queue(ElkynDB* db);
+    uint64_t elkyn_set_async(ElkynDB* db, const char* path, const void* data, size_t length, const char* token);
+    uint64_t elkyn_delete_async(ElkynDB* db, const char* path, const char* token);
+    int elkyn_wait_for_write(ElkynDB* db, uint64_t id);
 }
 
 // Global map to store DB instances
@@ -730,6 +745,241 @@ napi_value Unwatch(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// Enable write queue
+napi_value EnableWriteQueue(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 1) {
+        napi_throw_error(env, nullptr, "handle argument required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    int result = elkyn_enable_write_queue(it->second);
+    
+    napi_value js_result;
+    napi_create_int32(env, result, &js_result);
+    return js_result;
+}
+
+// Set binary async
+napi_value SetBinaryAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 3) {
+        napi_throw_error(env, nullptr, "handle, path, and binaryData arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string path = GetStringFromValue(env, args[1]);
+    
+    // Get binary data from Buffer
+    void* data;
+    size_t length;
+    napi_status status = napi_get_buffer_info(env, args[2], &data, &length);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Expected Buffer for binaryData argument");
+        return nullptr;
+    }
+    
+    const char* token = nullptr;
+    std::string token_str;
+    if (argc >= 4) {
+        napi_valuetype type;
+        napi_typeof(env, args[3], &type);
+        if (type == napi_string) {
+            token_str = GetStringFromValue(env, args[3]);
+            token = token_str.c_str();
+        }
+    }
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    uint64_t id = elkyn_set_async(it->second, path.c_str(), data, length, token);
+    if (id == 0) {
+        napi_throw_error(env, nullptr, "Failed to queue write operation");
+        return nullptr;
+    }
+    
+    // Return id as string
+    napi_value js_result;
+    std::string id_str = std::to_string(id);
+    napi_create_string_utf8(env, id_str.c_str(), id_str.length(), &js_result);
+    return js_result;
+}
+
+// Delete async
+napi_value DeleteAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and path arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string path = GetStringFromValue(env, args[1]);
+    
+    const char* token = nullptr;
+    std::string token_str;
+    if (argc >= 3) {
+        napi_valuetype type;
+        napi_typeof(env, args[2], &type);
+        if (type == napi_string) {
+            token_str = GetStringFromValue(env, args[2]);
+            token = token_str.c_str();
+        }
+    }
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    uint64_t id = elkyn_delete_async(it->second, path.c_str(), token);
+    if (id == 0) {
+        napi_throw_error(env, nullptr, "Failed to queue delete operation");
+        return nullptr;
+    }
+    
+    // Return id as string
+    napi_value js_result;
+    std::string id_str = std::to_string(id);
+    napi_create_string_utf8(env, id_str.c_str(), id_str.length(), &js_result);
+    return js_result;
+}
+
+// Wait for write
+napi_value WaitForWrite(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and writeId arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string id_str = GetStringFromValue(env, args[1]);
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    uint64_t id = std::stoull(id_str);
+    int result = elkyn_wait_for_write(it->second, id);
+    
+    napi_value js_result;
+    napi_create_int32(env, result, &js_result);
+    return js_result;
+}
+
+// Get raw (zero-copy for primitives)
+napi_value GetRaw(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and path arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string path = GetStringFromValue(env, args[1]);
+    
+    const char* token = nullptr;
+    std::string token_str;
+    if (argc >= 3) {
+        napi_valuetype type;
+        napi_typeof(env, args[2], &type);
+        if (type == napi_string) {
+            token_str = GetStringFromValue(env, args[2]);
+            token = token_str.c_str();
+        }
+    }
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    ReadInfo read_info;
+    int result = elkyn_get_raw(it->second, path.c_str(), &read_info, token);
+    
+    if (result != 0) {
+        return nullptr; // Return null on error
+    }
+    
+    napi_value value;
+    
+    switch (read_info.type_tag) {
+        case 's': // String
+            napi_create_string_utf8(env, reinterpret_cast<const char*>(read_info.data), read_info.length, &value);
+            break;
+            
+        case 'n': // Number
+            if (read_info.length >= 9) {
+                double num;
+                std::memcpy(&num, read_info.data + 1, sizeof(double));
+                napi_create_double(env, num, &value);
+            } else {
+                napi_get_null(env, &value);
+            }
+            break;
+            
+        case 'b': // Boolean
+            if (read_info.length >= 2) {
+                napi_get_boolean(env, read_info.data[1] != 0, &value);
+            } else {
+                napi_get_null(env, &value);
+            }
+            break;
+            
+        case 'z': // Null
+            napi_get_null(env, &value);
+            break;
+            
+        case 'm': // MessagePack (complex types)
+            napi_create_buffer_copy(env, read_info.length, read_info.data, nullptr, &value);
+            break;
+            
+        default:
+            napi_get_null(env, &value);
+            break;
+    }
+    
+    // Free if needed
+    if (read_info.needs_free) {
+        free(const_cast<uint8_t*>(read_info.data));
+    }
+    
+    return value;
+}
+
 // Module initialization
 napi_value InitModule(napi_env env, napi_value exports) {
     napi_property_descriptor properties[] = {
@@ -746,6 +996,11 @@ napi_value InitModule(napi_env env, napi_value exports) {
         DECLARE_NAPI_METHOD("enableEventQueue", EnableEventQueue),
         DECLARE_NAPI_METHOD("watch", Watch),
         DECLARE_NAPI_METHOD("unwatch", Unwatch),
+        DECLARE_NAPI_METHOD("enableWriteQueue", EnableWriteQueue),
+        DECLARE_NAPI_METHOD("setBinaryAsync", SetBinaryAsync),
+        DECLARE_NAPI_METHOD("deleteAsync", DeleteAsync),
+        DECLARE_NAPI_METHOD("waitForWrite", WaitForWrite),
+        DECLARE_NAPI_METHOD("getRaw", GetRaw),
     };
     
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
