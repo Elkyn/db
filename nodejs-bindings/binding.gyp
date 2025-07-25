@@ -6,38 +6,46 @@
         "src/elkyn_binding.cc"
       ],
       "include_dirs": [
-        "../zig-out/include"
-      ],
-      "libraries": [
-        "/Users/a664144/projects/elkyn-db/zig-out/lib/libelkyn-embedded-static.a",
-        "-L/opt/homebrew/opt/lmdb/lib",
-        "-llmdb"
-      ],
-      "cflags": [
-        "-std=c++17"
-      ],
-      "cflags_cc": [
-        "-std=c++17"
+        "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'include')\")"
       ],
       "conditions": [
         [
           "OS=='mac'",
           {
+            "libraries": [
+              "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'lib', 'libelkyn-embedded-static.a')\")",
+              "-llmdb"
+            ],
+            "include_dirs": [
+              "/opt/homebrew/include",
+              "/usr/local/include"
+            ],
+            "library_dirs": [
+              "/opt/homebrew/lib",
+              "/usr/local/lib"
+            ],
             "xcode_settings": {
               "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
               "CLANG_CXX_LIBRARY": "libc++",
-              "MACOSX_DEPLOYMENT_TARGET": "10.15"
+              "MACOSX_DEPLOYMENT_TARGET": "10.15",
+              "OTHER_CPLUSPLUSFLAGS": ["-std=c++17"]
             }
           }
         ],
         [
           "OS=='linux'",
           {
+            "libraries": [
+              "<!(node -p \"require('path').join(__dirname, '..', 'zig-out', 'lib', 'libelkyn-embedded-static.a')\")",
+              "-llmdb"
+            ],
             "cflags": [
-              "-fexceptions"
+              "-fexceptions",
+              "-std=c++17"
             ],
             "cflags_cc": [
-              "-fexceptions"
+              "-fexceptions",
+              "-std=c++17"
             ]
           }
         ]

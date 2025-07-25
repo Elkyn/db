@@ -7,7 +7,8 @@
   "scripts": {
     "build": "node-gyp rebuild",
     "test": "node test.js",
-    "install": "node-gyp rebuild"
+    "install": "node install.js",
+    "prepublishOnly": "echo 'Publishing @elkyn/store v'$npm_package_version"
   },
   "keywords": [
     "database",
@@ -23,7 +24,9 @@
   "dependencies": {
     "msgpack5": "^6.0.2",
     "msgpackr": "^1.10.1",
-    "napi-macros": "^2.2.2",
+    "napi-macros": "^2.2.2"
+  },
+  "optionalDependencies": {
     "node-gyp": "^10.3.1"
   },
   "devDependencies": {
@@ -48,5 +51,13 @@
   "homepage": "https://github.com/elkyn/db#readme",
   "bugs": {
     "url": "https://github.com/elkyn/db/issues"
-  }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "install.js",
+    "binding.gyp",
+    "src/",
+    "README.md"
+  ]
 }
