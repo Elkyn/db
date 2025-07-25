@@ -52,6 +52,10 @@ extern "C" {
     uint64_t elkyn_set_async(ElkynDB* db, const char* path, const void* data, size_t length, const char* token);
     uint64_t elkyn_delete_async(ElkynDB* db, const char* path, const char* token);
     int elkyn_wait_for_write(ElkynDB* db, uint64_t id);
+    
+    // SharedArrayBuffer functions
+    int elkyn_enable_sab_queue(ElkynDB* db, uint8_t* sab_ptr, uint32_t size);
+    int elkyn_sab_queue_stats(ElkynDB* db, uint32_t* head, uint32_t* tail, uint32_t* pending);
 }
 
 // Global map to store DB instances
@@ -980,6 +984,94 @@ napi_value GetRaw(napi_env env, napi_callback_info info) {
     return value;
 }
 
+// Enable SharedArrayBuffer queue
+napi_value EnableSABQueue(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and sharedArrayBuffer arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    // Get ArrayBuffer (SharedArrayBuffer access requires newer N-API)
+    bool is_array_buffer;
+    napi_status status = napi_is_arraybuffer(env, args[1], &is_array_buffer);
+    if (status != napi_ok || !is_array_buffer) {
+        napi_throw_error(env, nullptr, "Expected ArrayBuffer or SharedArrayBuffer");
+        return nullptr;
+    }
+    
+    void* data;
+    size_t byte_length;
+    status = napi_get_arraybuffer_info(env, args[1], &data, &byte_length);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Failed to get SharedArrayBuffer info");
+        return nullptr;
+    }
+    
+    // Enable SAB queue in Zig
+    int result = elkyn_enable_sab_queue(it->second, 
+                                        static_cast<uint8_t*>(data), 
+                                        static_cast<uint32_t>(byte_length));
+    
+    napi_value js_result;
+    napi_create_int32(env, result, &js_result);
+    return js_result;
+}
+
+// Get SAB queue statistics
+napi_value GetSABStats(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 1) {
+        napi_throw_error(env, nullptr, "handle argument required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    uint32_t head, tail, pending;
+    int result = elkyn_sab_queue_stats(it->second, &head, &tail, &pending);
+    
+    if (result != 0) {
+        napi_throw_error(env, nullptr, "SAB queue not enabled");
+        return nullptr;
+    }
+    
+    // Create result object
+    napi_value js_result;
+    napi_create_object(env, &js_result);
+    
+    napi_value js_head, js_tail, js_pending;
+    napi_create_uint32(env, head, &js_head);
+    napi_create_uint32(env, tail, &js_tail);
+    napi_create_uint32(env, pending, &js_pending);
+    
+    napi_set_named_property(env, js_result, "head", js_head);
+    napi_set_named_property(env, js_result, "tail", js_tail);
+    napi_set_named_property(env, js_result, "pending", js_pending);
+    
+    return js_result;
+}
+
 // Module initialization
 napi_value InitModule(napi_env env, napi_value exports) {
     napi_property_descriptor properties[] = {
@@ -1001,6 +1093,8 @@ napi_value InitModule(napi_env env, napi_value exports) {
         DECLARE_NAPI_METHOD("deleteAsync", DeleteAsync),
         DECLARE_NAPI_METHOD("waitForWrite", WaitForWrite),
         DECLARE_NAPI_METHOD("getRaw", GetRaw),
+        DECLARE_NAPI_METHOD("enableSABQueue", EnableSABQueue),
+        DECLARE_NAPI_METHOD("getSABStats", GetSABStats),
     };
     
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);

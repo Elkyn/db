@@ -3,6 +3,8 @@ const Storage = @import("storage/storage.zig").Storage;
 const EventEmitter = @import("storage/event_emitter.zig").EventEmitter;
 const EventQueue = @import("embedded/event_queue.zig").EventQueue;
 const WriteQueue = @import("embedded/write_queue.zig").WriteQueue;
+const SABQueue = @import("embedded/sab_queue.zig").SABQueue;
+const SABWorker = @import("embedded/sab_worker.zig").SABWorker;
 const Value = @import("storage/value.zig").Value;
 const RulesEngine = @import("rules/engine.zig").RulesEngine;
 const JWT = @import("auth/jwt.zig").JWT;
@@ -17,6 +19,8 @@ pub const ElkynDB = struct {
     event_emitter: *EventEmitter,
     event_queue: ?*EventQueue = null,
     write_queue: ?*WriteQueue = null,
+    sab_queue: ?*SABQueue = null,
+    sab_worker: ?*SABWorker = null,
     rules_engine: ?RulesEngine = null,
     jwt: ?JWT = null,
 
@@ -48,6 +52,13 @@ pub const ElkynDB = struct {
     pub fn deinit(self: *ElkynDB) void {
         if (self.rules_engine) |*engine| {
             engine.deinit();
+        }
+        if (self.sab_worker) |worker| {
+            worker.stop();
+            self.allocator.destroy(worker);
+        }
+        if (self.sab_queue) |queue| {
+            self.allocator.destroy(queue);
         }
         if (self.write_queue) |queue| {
             queue.deinit();
@@ -276,6 +287,24 @@ pub const ElkynDB = struct {
     pub fn waitForWrite(self: *ElkynDB, id: u64) !void {
         const queue = self.write_queue orelse return error.WriteQueueNotEnabled;
         return try queue.waitForWrite(id);
+    }
+    
+    /// Enable SharedArrayBuffer queue for zero N-API overhead
+    pub fn enableSABQueue(self: *ElkynDB, sab_ptr: [*]u8, size: u32) !void {
+        if (self.sab_queue != null) return; // Already enabled
+        
+        // Create SAB queue
+        const queue = try self.allocator.create(SABQueue);
+        queue.* = SABQueue.init(sab_ptr, size);
+        self.sab_queue = queue;
+        
+        // Create worker thread
+        const worker = try self.allocator.create(SABWorker);
+        worker.* = SABWorker.init(self.allocator, queue, self);
+        self.sab_worker = worker;
+        
+        // Start worker thread
+        try worker.start();
     }
 };
 
@@ -633,5 +662,20 @@ export fn elkyn_delete_async(db: *ElkynDB, path: [*:0]const u8, token: ?[*:0]con
 
 export fn elkyn_wait_for_write(db: *ElkynDB, id: u64) c_int {
     db.waitForWrite(id) catch return -1;
+    return 0;
+}
+
+// SharedArrayBuffer exports
+export fn elkyn_enable_sab_queue(db: *ElkynDB, sab_ptr: [*]u8, size: u32) c_int {
+    db.enableSABQueue(sab_ptr, size) catch return -1;
+    return 0;
+}
+
+export fn elkyn_sab_queue_stats(db: *ElkynDB, head: *u32, tail: *u32, pending: *u32) c_int {
+    const queue = db.sab_queue orelse return -1;
+    const stats = queue.stats();
+    head.* = stats.head;
+    tail.* = stats.tail;
+    pending.* = stats.pending;
     return 0;
 }
