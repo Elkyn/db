@@ -1,6 +1,7 @@
 const binding = require('./build/Release/elkyn_store');
 const { Observable } = require('./src/observable');
 const { pack, unpack } = require('msgpackr');
+const { SABQueue } = require('./sab-queue.js');
 
 class ElkynStore {
     constructor(options) {
@@ -29,6 +30,8 @@ class ElkynStore {
         
         this._observables = new Map();
         this._eventQueueEnabled = false;
+        this.sabQueue = null;
+        this.sabBuffer = null;
     }
 
     /**
@@ -185,15 +188,97 @@ class ElkynStore {
             });
         });
     }
+    
+    /**
+     * Enable SharedArrayBuffer queue for zero N-API overhead
+     * @param {number} [bufferSize=1024*1024] - Buffer size in bytes
+     * @returns {boolean} success
+     */
+    enableSABQueue(bufferSize = 1024 * 1024) {
+        if (this.sabQueue) return true; // Already enabled
+        
+        try {
+            // Create ArrayBuffer (SharedArrayBuffer needs newer Node.js)
+            this.sabBuffer = new ArrayBuffer(bufferSize);
+            this.sabQueue = new SABQueue(this.sabBuffer);
+            
+            // Enable in Zig
+            const result = binding.enableSABQueue(this.handle, this.sabBuffer);
+            if (result !== 0) {
+                this.sabQueue = null;
+                this.sabBuffer = null;
+                return false;
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('Failed to enable SAB queue:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Set value using SharedArrayBuffer (zero N-API overhead)
+     * @param {string} path - Data path
+     * @param {any} value - Value to store
+     * @returns {boolean} success
+     */
+    setSAB(path, value) {
+        if (!this.sabQueue) {
+            throw new Error('SAB queue not enabled. Call enableSABQueue() first.');
+        }
+        
+        return this.sabQueue.enqueueSet(path, value);
+    }
+    
+    /**
+     * Delete value using SharedArrayBuffer (zero N-API overhead)
+     * @param {string} path - Data path
+     * @returns {boolean} success
+     */
+    deleteSAB(path) {
+        if (!this.sabQueue) {
+            throw new Error('SAB queue not enabled. Call enableSABQueue() first.');
+        }
+        
+        return this.sabQueue.enqueueDelete(path);
+    }
+    
+    /**
+     * Get SAB queue statistics
+     * @returns {object} stats
+     */
+    getSABStats() {
+        if (!this.sabQueue) return null;
+        
+        const nativeStats = binding.getSABStats(this.handle);
+        const jsStats = this.sabQueue.getStats();
+        
+        return {
+            ...nativeStats,
+            ...jsStats,
+            zigPending: nativeStats.pending,
+            jsPending: jsStats.pending
+        };
+    }
 
     /**
-     * Set a MessagePack value at path
+     * Set a value at path (optimized for primitives)
      * @param {string} path - Data path
-     * @param {any} value - Value to serialize and store
+     * @param {any} value - Value to store
      * @param {string} [token] - Optional JWT token for auth
      * @returns {boolean} success
      */
     set(path, value, token = null) {
+        // For primitives, use optimized string API
+        if (typeof value === 'string') {
+            const result = binding.setString(this.handle, path, value, token);
+            if (result === -2) throw new Error('Authentication failed');
+            if (result === -1) throw new Error('Access denied or operation failed');
+            return result === 0;
+        }
+        
+        // For complex types, still use MessagePack (for now)
         const binaryData = pack(value);
         return this.setBinary(path, binaryData, token);
     }
