@@ -46,11 +46,10 @@ WORKDIR /build
 COPY . .
 
 # Find LMDB and build
-RUN pkg-config --libs --cflags lmdb && \
+RUN sh -c 'pkg-config --libs --cflags lmdb && \
     find /usr -name "liblmdb.so" 2>/dev/null || true && \
     find /usr -name "liblmdb.a" 2>/dev/null || true && \
     ls -la /usr/include/ | grep lmdb || true && \
-    # Create symlinks if needed for Zig to find them
     if [ -f /usr/lib/${LIB_ARCH}/liblmdb.so ]; then \
         ln -sf /usr/lib/${LIB_ARCH}/liblmdb.so /usr/lib/liblmdb.so || true; \
         ln -sf /usr/lib/${LIB_ARCH}/liblmdb.a /usr/lib/liblmdb.a 2>/dev/null || true; \
@@ -58,7 +57,7 @@ RUN pkg-config --libs --cflags lmdb && \
     export LIBRARY_PATH=/usr/lib/${LIB_ARCH}:/usr/lib && \
     export C_INCLUDE_PATH=/usr/include && \
     export PKG_CONFIG_PATH=/usr/lib/${LIB_ARCH}/pkgconfig && \
-    zig build -Doptimize=ReleaseFast
+    zig build -Doptimize=ReleaseFast'
 EOF
 }
 
