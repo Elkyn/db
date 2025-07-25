@@ -94,9 +94,9 @@ ls -lh dist/
 echo -e "${BLUE}Creating checksums...${NC}"
 cd dist
 if command -v shasum &> /dev/null; then
-    shasum -a 256 * > checksums.sha256
+    find . -maxdepth 1 -type f -exec shasum -a 256 {} \; > checksums.sha256
 else
-    sha256sum * > checksums.sha256
+    find . -maxdepth 1 -type f -exec sha256sum {} \; > checksums.sha256
 fi
 cd ..
 echo -e "${GREEN}✓ Checksums created${NC}"
