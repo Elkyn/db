@@ -90,16 +90,27 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Zig
-RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ && \
-    mv zig-linux-x86_64-0.13.0 /opt/zig && \
+# Install Zig for the correct architecture
+RUN ARCH=$(dpkg --print-architecture) && \
+    ZIG_ARCH=$([ "$ARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
+    curl -L https://ziglang.org/download/0.13.0/zig-linux-${ZIG_ARCH}-0.13.0.tar.xz | tar -xJ && \
+    mv zig-linux-${ZIG_ARCH}-0.13.0 /opt/zig && \
     ln -s /opt/zig/zig /usr/local/bin/zig
 
 WORKDIR /build
 COPY . .
 
-# Build Zig library (includes static library)
-RUN zig build -Doptimize=ReleaseFast
+# Build Zig library with LMDB path fix
+RUN ARCH=$(dpkg --print-architecture) && \
+    LIB_ARCH=$([ "$ARCH" = "arm64" ] && echo "aarch64-linux-gnu" || echo "x86_64-linux-gnu") && \
+    echo "Architecture: $ARCH, Library path: $LIB_ARCH" && \
+    ls -la /usr/lib/${LIB_ARCH}/liblmdb* && \
+    ln -sf /usr/lib/${LIB_ARCH}/liblmdb.so /usr/lib/liblmdb.so && \
+    ln -sf /usr/lib/${LIB_ARCH}/liblmdb.a /usr/lib/liblmdb.a && \
+    ls -la /usr/lib/liblmdb* && \
+    LIBRARY_PATH=/usr/lib/${LIB_ARCH}:/usr/lib \
+    C_INCLUDE_PATH=/usr/include \
+    zig build -Doptimize=ReleaseFast
 
 # Build Node.js module
 WORKDIR /build/nodejs-bindings
