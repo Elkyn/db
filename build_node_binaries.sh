@@ -45,6 +45,32 @@ build_native() {
     fi
 }
 
+# Function to build Linux Node.js binaries with Docker
+build_linux_node() {
+    local PLATFORM=$1
+    local NODE_SUFFIX=$2
+    local OUTPUT_NAME=$3
+    
+    echo -e "${BLUE}Building Linux $NODE_SUFFIX Node.js binary with Docker...${NC}"
+    
+    docker build --platform $PLATFORM -f Dockerfile.node -t elkyn-node-build-$NODE_SUFFIX . || {
+        echo -e "${YELLOW}Warning: Docker build failed for $NODE_SUFFIX${NC}"
+        return 1
+    }
+    
+    # Extract binary
+    docker create --name elkyn-node-extract-$NODE_SUFFIX elkyn-node-build-$NODE_SUFFIX
+    docker cp elkyn-node-extract-$NODE_SUFFIX:/elkyn_store-linux-x64.node "$OUTPUT_DIR/$OUTPUT_NAME" || true
+    docker rm elkyn-node-extract-$NODE_SUFFIX
+    docker rmi elkyn-node-build-$NODE_SUFFIX
+    
+    if [[ -f "$OUTPUT_DIR/$OUTPUT_NAME" ]]; then
+        echo -e "${GREEN}✓ Built Linux $NODE_SUFFIX Node.js module${NC}"
+        return 0
+    fi
+    return 1
+}
+
 # Build Linux binaries with Docker if on macOS
 if [[ "$(uname -s)" == "Darwin" ]] && command -v docker &> /dev/null; then
     echo -e "${BLUE}Building Linux Node.js binaries with Docker...${NC}"
@@ -84,21 +110,13 @@ RUN npm run build
 RUN cp build/Release/elkyn_store.node /elkyn_store-linux-x64.node
 EOF
 
-    # Build with Docker
-    docker build --platform linux/amd64 -f Dockerfile.node -t elkyn-node-build . || {
-        echo -e "${YELLOW}Warning: Docker build failed${NC}"
-    }
+    # Build x64
+    build_linux_node "linux/amd64" "x64" "elkyn_store-linux-x64.node"
     
-    # Extract binary
-    docker create --name elkyn-node-extract elkyn-node-build
-    docker cp elkyn-node-extract:/elkyn_store-linux-x64.node "$OUTPUT_DIR/elkyn_store-linux-x64.node" || true
-    docker rm elkyn-node-extract
-    docker rmi elkyn-node-build
+    # Build ARM64
+    build_linux_node "linux/arm64" "arm64" "elkyn_store-linux-arm64.node"
+    
     rm -f Dockerfile.node
-    
-    if [[ -f "$OUTPUT_DIR/elkyn_store-linux-x64.node" ]]; then
-        echo -e "${GREEN}✓ Built Linux x64 Node.js module${NC}"
-    fi
 fi
 
 # Build native module

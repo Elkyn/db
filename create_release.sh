@@ -117,27 +117,60 @@ EOF
 
 # Create the release
 echo -e "${BLUE}Creating GitHub release...${NC}"
-echo -e "${YELLOW}This will create tag $VERSION and push it to GitHub${NC}"
-read -p "Continue? (y/N) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Create and push tag
-    git tag -a "$VERSION" -m "Release $VERSION"
-    git push origin "$VERSION"
-    
-    # Create release with gh CLI
-    gh release create "$VERSION" \
-        --title "Elkyn DB $VERSION" \
-        --notes-file release_notes.md \
-        --prerelease \
-        $RELEASE_DIR/*
-    
-    echo -e "${GREEN}✨ Release $VERSION created successfully!${NC}"
-    echo -e "${GREEN}View at: https://github.com/Elkyn/db/releases/tag/$VERSION${NC}"
+
+# Check if tag already exists
+if git rev-parse "$VERSION" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Tag $VERSION already exists${NC}"
+    # Check if release already exists
+    if gh release view "$VERSION" >/dev/null 2>&1; then
+        echo -e "${YELLOW}GitHub release for $VERSION already exists${NC}"
+        read -p "Update existing release with new binaries? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Upload new binaries to existing release
+            gh release upload "$VERSION" $RELEASE_DIR/* --clobber
+            echo -e "${GREEN}✨ Updated release $VERSION with new binaries!${NC}"
+        else
+            echo -e "${YELLOW}Release update cancelled.${NC}"
+        fi
+    else
+        # Tag exists but no release
+        read -p "Create GitHub release for existing tag $VERSION? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            gh release create "$VERSION" \
+                --title "Elkyn DB $VERSION" \
+                --notes-file release_notes.md \
+                --prerelease \
+                $RELEASE_DIR/*
+            echo -e "${GREEN}✨ Release $VERSION created successfully!${NC}"
+        fi
+    fi
 else
-    echo -e "${YELLOW}Release cancelled. Tag not created.${NC}"
-    echo -e "${YELLOW}Binaries are available in: $RELEASE_DIR/${NC}"
+    # Tag doesn't exist - create both tag and release
+    echo -e "${YELLOW}This will create tag $VERSION and push it to GitHub${NC}"
+    read -p "Continue? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Create and push tag
+        git tag -a "$VERSION" -m "Release $VERSION"
+        git push origin "$VERSION"
+        
+        # Create release with gh CLI
+        gh release create "$VERSION" \
+            --title "Elkyn DB $VERSION" \
+            --notes-file release_notes.md \
+            --prerelease \
+            $RELEASE_DIR/*
+        
+        echo -e "${GREEN}✨ Release $VERSION created successfully!${NC}"
+    else
+        echo -e "${YELLOW}Release cancelled. Tag not created.${NC}"
+        echo -e "${YELLOW}Binaries are available in: $RELEASE_DIR/${NC}"
+    fi
 fi
+
+echo -e "${GREEN}View at: https://github.com/Elkyn/db/releases/tag/$VERSION${NC}"
 
 # Cleanup
 rm -f release_notes.md

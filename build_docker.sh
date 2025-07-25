@@ -19,8 +19,13 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-# Create Dockerfile
-cat > Dockerfile.build << 'EOF'
+# Function to create Dockerfile for specific architecture
+create_dockerfile() {
+    local ARCH=$1
+    local ZIG_ARCH=$2
+    local LIB_ARCH=$3
+    
+    cat > Dockerfile.build << EOF
 FROM debian:bookworm-slim
 
 # Install dependencies
@@ -32,9 +37,9 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Zig 0.13.0 (stable release)
-RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ && \
-    mv zig-linux-x86_64-0.13.0 /opt/zig && \
+# Install Zig 0.13.0 for the target architecture
+RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-${ZIG_ARCH}-0.13.0.tar.xz | tar -xJ && \
+    mv zig-linux-${ZIG_ARCH}-0.13.0 /opt/zig && \
     ln -s /opt/zig/zig /usr/local/bin/zig
 
 WORKDIR /build
@@ -42,31 +47,52 @@ COPY . .
 
 # Find LMDB and build
 RUN pkg-config --libs --cflags lmdb && \
-    ls -la /usr/lib/x86_64-linux-gnu/ | grep lmdb || true && \
+    ls -la /usr/lib/${LIB_ARCH}/ | grep lmdb || true && \
     ls -la /usr/include/ | grep lmdb || true && \
-    export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu && \
+    export LIBRARY_PATH=/usr/lib/${LIB_ARCH} && \
     export C_INCLUDE_PATH=/usr/include && \
     zig build -Doptimize=ReleaseFast
 EOF
+}
 
 # Build for Linux x86_64
 echo -e "${BLUE}Building Linux x86_64 with Docker...${NC}"
-docker build --platform linux/amd64 -f Dockerfile.build -t elkyn-build . || {
+create_dockerfile "amd64" "x86_64" "x86_64-linux-gnu"
+docker build --platform linux/amd64 -f Dockerfile.build -t elkyn-build-amd64 . || {
     echo -e "${RED}Docker build failed${NC}"
     rm -f Dockerfile.build
     exit 1
 }
 
-# Extract binaries
-echo -e "${BLUE}Extracting binaries...${NC}"
-docker create --name elkyn-extract elkyn-build
-docker cp elkyn-extract:/build/zig-out/bin/elkyn-server dist/elkyn-server-linux-x86_64
-docker cp elkyn-extract:/build/zig-out/bin/elkyn-db dist/elkyn-db-linux-x86_64
-docker cp elkyn-extract:/build/zig-out/lib/libelkyn-embedded.so dist/libelkyn-embedded-linux-x86_64.so 2>/dev/null || true
-docker rm elkyn-extract
+# Extract x86_64 binaries
+echo -e "${BLUE}Extracting x86_64 binaries...${NC}"
+docker create --name elkyn-extract-amd64 elkyn-build-amd64
+docker cp elkyn-extract-amd64:/build/zig-out/bin/elkyn-server dist/elkyn-server-linux-x86_64
+docker cp elkyn-extract-amd64:/build/zig-out/bin/elkyn-db dist/elkyn-db-linux-x86_64
+docker cp elkyn-extract-amd64:/build/zig-out/lib/libelkyn-embedded.so dist/libelkyn-embedded-linux-x86_64.so 2>/dev/null || true
+docker rm elkyn-extract-amd64
+docker rmi elkyn-build-amd64
+
+# Build for Linux ARM64
+echo -e "${BLUE}Building Linux ARM64 with Docker...${NC}"
+create_dockerfile "arm64" "aarch64" "aarch64-linux-gnu"
+docker build --platform linux/arm64 -f Dockerfile.build -t elkyn-build-arm64 . || {
+    echo -e "${YELLOW}Warning: ARM64 build failed - this is optional${NC}"
+}
+
+# Extract ARM64 binaries if build succeeded
+if docker image inspect elkyn-build-arm64 >/dev/null 2>&1; then
+    echo -e "${BLUE}Extracting ARM64 binaries...${NC}"
+    docker create --name elkyn-extract-arm64 elkyn-build-arm64
+    docker cp elkyn-extract-arm64:/build/zig-out/bin/elkyn-server dist/elkyn-server-linux-arm64
+    docker cp elkyn-extract-arm64:/build/zig-out/bin/elkyn-db dist/elkyn-db-linux-arm64
+    docker cp elkyn-extract-arm64:/build/zig-out/lib/libelkyn-embedded.so dist/libelkyn-embedded-linux-arm64.so 2>/dev/null || true
+    docker rm elkyn-extract-arm64
+    docker rmi elkyn-build-arm64
+    echo -e "${GREEN}✓ Built Linux ARM64 binaries${NC}"
+fi
 
 # Cleanup
-docker rmi elkyn-build
 rm -f Dockerfile.build
 
 echo -e "${GREEN}✓ Built Linux x86_64 binaries${NC}"

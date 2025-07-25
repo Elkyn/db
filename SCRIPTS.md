@@ -42,6 +42,7 @@ This will:
 ```bash
 ./build_docker.sh
 ```
+This builds both x86_64 and ARM64 Linux binaries using Docker.
 
 ### Start development server
 ```bash
@@ -61,11 +62,11 @@ This will:
 ## 📁 Build Outputs
 
 - `dist/` - Server binaries
-  - `elkyn-server-*` - HTTP server binaries
+  - `elkyn-server-*` - HTTP server binaries (linux-x86_64, linux-arm64, macos-arm64, etc.)
   - `elkyn-db-*` - CLI binaries
   - `libelkyn-embedded.*` - Shared libraries
 - `dist/node/` - Node.js binaries
-  - `elkyn_store-*.node` - Native Node.js modules
+  - `elkyn_store-*.node` - Native Node.js modules (linux-x64, linux-arm64, darwin-arm64, etc.)
 - `zig-out/` - Raw build output
 
 ## 🐳 Docker Requirements
