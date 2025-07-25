@@ -1,5 +1,6 @@
 const binding = require('./build/Release/elkyn_store');
 const { Observable } = require('./src/observable');
+const { pack, unpack } = require('msgpackr');
 
 class ElkynStore {
     constructor(options) {
@@ -128,31 +129,67 @@ class ElkynStore {
     }
 
     /**
-     * Set a JSON value at path
+     * Set a MessagePack value at path
      * @param {string} path - Data path
      * @param {any} value - Value to serialize and store
      * @param {string} [token] - Optional JWT token for auth
      * @returns {boolean} success
      */
     set(path, value, token = null) {
-        return this.setString(path, JSON.stringify(value), token);
+        const binaryData = pack(value);
+        return this.setBinary(path, binaryData, token);
     }
 
     /**
-     * Get and parse JSON value from path
+     * Get and parse MessagePack value from path
      * @param {string} path - Data path
      * @param {string} [token] - Optional JWT token for auth
      * @returns {any} parsed value or null
      */
     get(path, token = null) {
-        const str = this.getString(path, token);
-        if (str === null) return null;
+        const binaryData = this.getBinary(path, token);
+        if (binaryData === null) return null;
         
         try {
-            return JSON.parse(str);
+            return unpack(binaryData);
         } catch (error) {
-            // Return as string if not valid JSON
-            return str;
+            // Fallback - shouldn't happen with MessagePack
+            return null;
+        }
+    }
+
+    /**
+     * Set binary MessagePack data at path
+     * @param {string} path - Data path
+     * @param {Buffer} binaryData - MessagePack binary data
+     * @param {string} [token] - Optional JWT token for auth
+     * @returns {boolean} success
+     */
+    setBinary(path, binaryData, token = null) {
+        const result = binding.setBinary(this.handle, path, binaryData, token);
+        if (result === -2) {
+            throw new Error('Authentication failed');
+        }
+        if (result === -1) {
+            throw new Error('Access denied or operation failed');
+        }
+        return result === 0;
+    }
+
+    /**
+     * Get binary MessagePack data from path
+     * @param {string} path - Data path
+     * @param {string} [token] - Optional JWT token for auth
+     * @returns {Buffer|null} binary data or null if not found
+     */
+    getBinary(path, token = null) {
+        try {
+            return binding.getBinary(this.handle, path, token);
+        } catch (error) {
+            if (error.message.includes('Access denied')) {
+                throw new Error('Access denied');
+            }
+            return null;
         }
     }
 

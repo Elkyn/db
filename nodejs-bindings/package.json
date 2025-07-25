@@ -21,6 +21,7 @@
   "author": "Elkyn Team",
   "license": "MIT",
   "dependencies": {
+    "msgpackr": "^1.10.1",
     "napi-macros": "^2.2.2",
     "node-gyp": "^10.3.1"
   },

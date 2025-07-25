@@ -90,12 +90,32 @@ pub fn normalizePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
         return try allocator.dupe(u8, path);
     }
     
-    // Remove trailing slash
-    if (path[path.len - 1] == PATH_SEPARATOR) {
-        return try allocator.dupe(u8, path[0..path.len - 1]);
+    // Build normalized path by removing double slashes and trailing slash
+    var normalized = std.ArrayList(u8).init(allocator);
+    defer normalized.deinit();
+    
+    // Always start with /
+    try normalized.append(PATH_SEPARATOR);
+    
+    // Tokenize and rebuild without empty segments
+    var iter = std.mem.tokenizeScalar(u8, path[1..], PATH_SEPARATOR);
+    var first = true;
+    while (iter.next()) |segment| {
+        if (segment.len == 0) continue; // Skip empty segments (double slashes)
+        
+        if (!first) {
+            try normalized.append(PATH_SEPARATOR);
+        }
+        try normalized.appendSlice(segment);
+        first = false;
     }
     
-    return try allocator.dupe(u8, path);
+    // If we only have "/" return it
+    if (normalized.items.len == 1) {
+        return try allocator.dupe(u8, "/");
+    }
+    
+    return try normalized.toOwnedSlice();
 }
 
 /// Check if a path matches a pattern with wildcards

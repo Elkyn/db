@@ -267,8 +267,15 @@ export fn elkyn_set_string(db: *ElkynDB, path: [*:0]const u8, value: [*:0]const 
         auth_ctx = db.validateToken(std.mem.span(t)) catch return -2; // Auth error
     }
     
-    const val = Value{ .string = value_str };
-    db.set(path_str, val, if (auth_ctx) |*ctx| ctx else null) catch return -1;
+    // Create a string value directly (no JSON parsing)
+    const duped_str = db.allocator.dupe(u8, value_str) catch return -1;
+    var val = Value{ .string = duped_str };
+    defer val.deinit(db.allocator);
+    
+    db.set(path_str, val, if (auth_ctx) |*ctx| ctx else null) catch {
+        return -1;
+    };
+    
     return 0;
 }
 
@@ -285,12 +292,40 @@ export fn elkyn_get_string(db: *ElkynDB, path: [*:0]const u8, token: ?[*:0]const
     var value = db.get(path_str, if (auth_ctx) |*ctx| ctx else null) catch return null;
     defer value.deinit(db.allocator);
     
+    // Convert any Value type to string representation for C interface
     switch (value) {
         .string => |s| {
             const result = db.allocator.dupeZ(u8, s) catch return null;
             return result.ptr;
         },
-        else => return null,
+        .number => |n| {
+            const str = std.fmt.allocPrint(db.allocator, "{d}", .{n}) catch return null;
+            const result = db.allocator.dupeZ(u8, str) catch {
+                db.allocator.free(str);
+                return null;
+            };
+            db.allocator.free(str);
+            return result.ptr;
+        },
+        .boolean => |b| {
+            const str = if (b) "true" else "false";
+            const result = db.allocator.dupeZ(u8, str) catch return null;
+            return result.ptr;
+        },
+        .null => {
+            const result = db.allocator.dupeZ(u8, "null") catch return null;
+            return result.ptr;
+        },
+        .array, .object => {
+            // For complex types, return as JSON string
+            const json = value.toJson(db.allocator) catch return null;
+            const result = db.allocator.dupeZ(u8, json) catch {
+                db.allocator.free(json);
+                return null;
+            };
+            db.allocator.free(json);
+            return result.ptr;
+        },
     }
 }
 
@@ -325,6 +360,57 @@ export fn elkyn_free_string(ptr: [*:0]u8) void {
     const allocator = std.heap.c_allocator;
     const len = std.mem.len(ptr);
     allocator.free(ptr[0..len]);
+}
+
+export fn elkyn_set_binary(db: *ElkynDB, path: [*:0]const u8, data: [*]const u8, length: usize, token: ?[*:0]const u8) c_int {
+    const path_str = std.mem.span(path);
+    const data_slice = data[0..length];
+    
+    var auth_ctx: ?AuthContext = null;
+    defer if (auth_ctx) |*ctx| ctx.deinit(db.allocator);
+    
+    if (token) |t| {
+        auth_ctx = db.validateToken(std.mem.span(t)) catch return -2; // Auth error
+    }
+    
+    // Deserialize MessagePack directly
+    var val = Value.fromMessagePack(db.allocator, data_slice) catch return -1;
+    defer val.deinit(db.allocator);
+    
+    db.set(path_str, val, if (auth_ctx) |*ctx| ctx else null) catch {
+        return -1;
+    };
+    
+    return 0;
+}
+
+export fn elkyn_get_binary(db: *ElkynDB, path: [*:0]const u8, length: *usize, token: ?[*:0]const u8) ?[*]u8 {
+    const path_str = std.mem.span(path);
+    
+    var auth_ctx: ?AuthContext = null;
+    defer if (auth_ctx) |*ctx| ctx.deinit(db.allocator);
+    
+    if (token) |t| {
+        auth_ctx = db.validateToken(std.mem.span(t)) catch return null;
+    }
+    
+    var value = db.get(path_str, if (auth_ctx) |*ctx| ctx else null) catch return null;
+    defer value.deinit(db.allocator);
+    
+    // Serialize to MessagePack
+    const binary_data = value.toMessagePack(db.allocator) catch return null;
+    
+    // Allocate with C allocator for returning to C++ 
+    const result = std.heap.c_allocator.alloc(u8, binary_data.len) catch {
+        db.allocator.free(binary_data);
+        return null;
+    };
+    
+    @memcpy(result, binary_data);
+    db.allocator.free(binary_data);
+    
+    length.* = result.len;
+    return result.ptr;
 }
 
 // Event Queue exports

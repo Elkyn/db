@@ -18,6 +18,8 @@ extern "C" {
     int elkyn_enable_rules(ElkynDB* db, const char* rules_json);
     int elkyn_set_string(ElkynDB* db, const char* path, const char* value, const char* token);
     char* elkyn_get_string(ElkynDB* db, const char* path, const char* token);
+    int elkyn_set_binary(ElkynDB* db, const char* path, const void* data, size_t length, const char* token);
+    void* elkyn_get_binary(ElkynDB* db, const char* path, size_t* length, const char* token);
     int elkyn_delete(ElkynDB* db, const char* path, const char* token);
     char* elkyn_create_token(ElkynDB* db, const char* uid, const char* email);
     void elkyn_free_string(char* ptr);
@@ -212,6 +214,97 @@ napi_value GetString(napi_env env, napi_callback_info info) {
     napi_value result;
     napi_create_string_utf8(env, result_str, strlen(result_str), &result);
     elkyn_free_string(result_str);
+    
+    return result;
+}
+
+// Set binary value (MessagePack)
+napi_value SetBinary(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 3) {
+        napi_throw_error(env, nullptr, "handle, path, and binaryData arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string path = GetStringFromValue(env, args[1]);
+    
+    // Get binary data from Buffer
+    void* data;
+    size_t length;
+    napi_status status = napi_get_buffer_info(env, args[2], &data, &length);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Expected Buffer for binaryData argument");
+        return nullptr;
+    }
+    
+    const char* token = nullptr;
+    std::string token_str;
+    if (argc >= 4) {
+        napi_valuetype type;
+        napi_typeof(env, args[3], &type);
+        if (type == napi_string) {
+            token_str = GetStringFromValue(env, args[3]);
+            token = token_str.c_str();
+        }
+    }
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    int result = elkyn_set_binary(it->second, path.c_str(), data, length, token);
+    
+    napi_value js_result;
+    napi_create_int32(env, result, &js_result);
+    return js_result;
+}
+
+// Get binary value (MessagePack)
+napi_value GetBinary(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "handle and path arguments required");
+        return nullptr;
+    }
+    
+    std::string handle = GetStringFromValue(env, args[0]);
+    std::string path = GetStringFromValue(env, args[1]);
+    
+    const char* token = nullptr;
+    std::string token_str;
+    if (argc >= 3) {
+        napi_valuetype type;
+        napi_typeof(env, args[2], &type);
+        if (type == napi_string) {
+            token_str = GetStringFromValue(env, args[2]);
+            token = token_str.c_str();
+        }
+    }
+    
+    auto it = db_instances.find(handle);
+    if (it == db_instances.end()) {
+        napi_throw_error(env, nullptr, "Invalid database handle");
+        return nullptr;
+    }
+    
+    size_t length;
+    void* data = elkyn_get_binary(it->second, path.c_str(), &length, token);
+    if (!data) {
+        return nullptr; // null
+    }
+    
+    napi_value result;
+    napi_create_buffer_copy(env, length, data, nullptr, &result);
+    free(data); // elkyn_get_binary allocates, we need to free
     
     return result;
 }
@@ -645,6 +738,8 @@ napi_value InitModule(napi_env env, napi_value exports) {
         DECLARE_NAPI_METHOD("enableRules", EnableRules),
         DECLARE_NAPI_METHOD("setString", SetString),
         DECLARE_NAPI_METHOD("getString", GetString),
+        DECLARE_NAPI_METHOD("setBinary", SetBinary),
+        DECLARE_NAPI_METHOD("getBinary", GetBinary),
         DECLARE_NAPI_METHOD("delete", Delete),
         DECLARE_NAPI_METHOD("createToken", CreateToken),
         DECLARE_NAPI_METHOD("close", Close),
