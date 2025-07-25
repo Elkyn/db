@@ -59,7 +59,7 @@ ls -lh dist/
 # Create checksums
 echo -e "${BLUE}Creating checksums...${NC}"
 cd dist
-shasum -a 256 * > checksums.sha256
+shasum -a 256 *.dylib elkyn-* 2>/dev/null > checksums.sha256 || shasum -a 256 elkyn-* > checksums.sha256
 cd ..
 echo -e "${GREEN}✓ Checksums created${NC}"
 
