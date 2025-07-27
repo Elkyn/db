@@ -1,0 +1,25 @@
+FROM node:20-slim
+
+# Install runtime dependency only
+RUN apt-get update && apt-get install -y \
+    liblmdb0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy everything including test script
+COPY . .
+
+# Show system info
+RUN echo "Platform:" && uname -m && echo "Node:" && node -v
+
+# Skip install script, just install dependencies
+RUN npm install --ignore-scripts
+
+# Create the directory structure for the binary
+RUN mkdir -p node_modules/elkyn-store/build/Release
+
+# For testing, we'll mount the binary at runtime
+# docker run -v /path/to/binary:/app/node_modules/elkyn-store/build/Release/elkyn_store.node
+
+CMD ["node", "test-docker.js"]

@@ -12,7 +12,7 @@ const RELEASE_TAG = process.env.ELKYN_VERSION || `v${packageJson.version}`;
 const platform = process.platform;
 const arch = process.arch;
 
-console.log(`Installing @elkyn/store for ${platform} ${arch}...`);
+console.log(`Installing elkyn-store for ${platform} ${arch}...`);
 
 // Map platform/arch to binary name in GitHub release
 const binaryMap = {

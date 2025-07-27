@@ -63,11 +63,11 @@ echo -e "${BLUE}Step 4: Build and create GitHub release${NC}"
 echo ""
 echo -e "${BLUE}Step 5: Publish npm package${NC}"
 echo -e "${YELLOW}The npm package will download binaries from the GitHub release${NC}"
-read -p "Publish @elkyn/store@$VERSION to npm? (y/N) " -n 1 -r
+read -p "Publish elkyn-store@$VERSION to npm? (y/N) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     cd nodejs-bindings
-    npm publish
+    npm publish --access public
     cd ..
     echo -e "${GREEN}✓ Published to npm${NC}"
 else
@@ -83,4 +83,4 @@ echo -e "${BLUE}Summary:${NC}"
 echo "  - Version: $VERSION"
 echo "  - Git tag: $VERSION_WITH_V"
 echo "  - GitHub release: https://github.com/Elkyn/db/releases/tag/$VERSION_WITH_V"
-echo "  - NPM package: https://www.npmjs.com/package/@elkyn/store"
+echo "  - NPM package: https://www.npmjs.com/package/elkyn-store"

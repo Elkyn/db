@@ -1,0 +1,12 @@
+{
+  "name": "test-elkyn-install",
+  "version": "1.0.0",
+  "description": "Test project for elkyn-store npm package",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "elkyn-store": "0.1.1"
+  }
+}

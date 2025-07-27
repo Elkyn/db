@@ -1,6 +1,6 @@
 {
-  "name": "@elkyn/store",
-  "version": "0.1.0",
+  "name": "elkyn-store",
+  "version": "0.1.2",
   "description": "Embedded real-time tree database with security rules",
   "main": "index.js",
   "types": "index.d.ts",
@@ -8,7 +8,7 @@
     "build": "node-gyp rebuild",
     "test": "node test.js",
     "install": "node install.js",
-    "prepublishOnly": "echo 'Publishing @elkyn/store v'$npm_package_version"
+    "prepublishOnly": "echo 'Publishing elkyn-store v'$npm_package_version"
   },
   "keywords": [
     "database",
@@ -56,6 +56,7 @@
     "index.js",
     "index.d.ts",
     "install.js",
+    "sab-queue.js",
     "binding.gyp",
     "src/",
     "README.md"
