@@ -186,9 +186,10 @@ fn test_replace_subtree() {
     cleanup(&dir);
 }
 
-// ==================== WILDCARDS (TO IMPLEMENT) ====================
+// ==================== WILDCARDS (FUTURE FEATURE) ====================
+// These tests are placeholders for wildcard pattern matching functionality
+// which is planned but not yet implemented in Antler.
 
-// TODO: Implement wildcards
 fn test_wildcard_star_match() {
     // let dir = test_dir("wildcard_star");
     // let store = Store::open(std::path::Path::new(&dir)).unwrap();
@@ -206,14 +207,12 @@ fn test_wildcard_star_match() {
     println!("Wildcard star match: SKIPPED (not implemented)");
 }
 
-// TODO: Implement wildcards
 fn test_wildcard_question_match() {
-    println!("Wildcard question match: SKIPPED (not implemented)");
+    println!("Wildcard question match: SKIPPED (future feature)");
 }
 
-// TODO: Implement wildcards
 fn test_wildcard_delete() {
-    println!("Wildcard delete: SKIPPED (not implemented)");
+    println!("Wildcard delete: SKIPPED (future feature)");
 }
 
 // ==================== PERSISTENCE & RECOVERY ====================

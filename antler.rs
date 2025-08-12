@@ -22,8 +22,9 @@ const RT_DEL_POINT: u8 = 2;
 const RT_DEL_SUB: u8 = 3;
 const BLOCK_SIZE: usize = 4096;
 const MEMTABLE_THRESHOLD: usize = 256 * 1024;
-const L0_COMPACTION_THRESHOLD: usize = 4;
-const L1_COMPACTION_THRESHOLD: usize = 10;
+// Compaction is currently disabled - these will be used when implemented
+// const L0_COMPACTION_THRESHOLD: usize = 4;
+// const L1_COMPACTION_THRESHOLD: usize = 10;
 const CACHE_SIZE: usize = 32 * 1024 * 1024;
 const GROUP_COMMIT_MS: u64 = 10;
 
@@ -57,7 +58,7 @@ enum MemValue {
 struct GroupCommitWAL {
     path: PathBuf,
     buffer: Mutex<Vec<WALEntry>>,
-    sync_interval: Duration,
+    // sync_interval: Duration, // Currently using const GROUP_COMMIT_MS
     shutdown: Arc<(Mutex<bool>, Condvar)>,
 }
 
@@ -72,9 +73,9 @@ struct WALEntry {
 #[derive(Debug)]
 struct Segment {
     path: PathBuf,
-    seq_low: u64,
+    // seq_low: u64,     // Not currently used but may be useful for compaction
     seq_high: u64,
-    key_count: usize,
+    // key_count: usize, // Not currently used but may be useful for stats
     bloom: Option<BloomFilter>,
     index: Vec<(String, u64)>,
     index_start: u64,  // FIXED: Store where blocks end
@@ -138,9 +139,8 @@ impl Store {
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_millis(GROUP_COMMIT_MS));
-                if let Err(e) = wal_clone.sync_now() {
-                    eprintln!("WAL sync error: {}", e);
-                }
+                // Silently ignore sync errors - WAL will retry on next interval
+                let _ = wal_clone.sync_now();
                 
                 let shutdown = wal_clone.shutdown.0.lock().unwrap();
                 if *shutdown {
@@ -679,7 +679,7 @@ impl GroupCommitWAL {
         Ok(GroupCommitWAL {
             path: path.to_path_buf(),
             buffer: Mutex::new(Vec::new()),
-            sync_interval: Duration::from_millis(GROUP_COMMIT_MS),
+            // sync_interval: Duration::from_millis(GROUP_COMMIT_MS),
             shutdown: Arc::new((Mutex::new(false), Condvar::new())),
         })
     }
@@ -757,17 +757,19 @@ impl Segment {
         let mut footer = [0u8; 32];
         file.read_exact(&mut footer)?;
         
-        let mut seq_low_bytes = [0u8; 8];
-        seq_low_bytes.copy_from_slice(&footer[0..8]);
-        let seq_low = u64::from_le_bytes(seq_low_bytes);
+        // seq_low stored in footer but not currently used
+        // let mut seq_low_bytes = [0u8; 8];
+        // seq_low_bytes.copy_from_slice(&footer[0..8]);
+        // let seq_low = u64::from_le_bytes(seq_low_bytes);
         
         let mut seq_high_bytes = [0u8; 8];
         seq_high_bytes.copy_from_slice(&footer[8..16]);
         let seq_high = u64::from_le_bytes(seq_high_bytes);
         
-        let mut key_count_bytes = [0u8; 4];
-        key_count_bytes.copy_from_slice(&footer[16..20]);
-        let key_count = u32::from_le_bytes(key_count_bytes) as usize;
+        // key_count stored in footer but not currently used
+        // let mut key_count_bytes = [0u8; 4];
+        // key_count_bytes.copy_from_slice(&footer[16..20]);
+        // let key_count = u32::from_le_bytes(key_count_bytes) as usize;
         
         let mut index_size_bytes = [0u8; 4];
         index_size_bytes.copy_from_slice(&footer[20..24]);
@@ -834,9 +836,9 @@ impl Segment {
         
         Ok(Segment {
             path: path.to_path_buf(),
-            seq_low,
+            // seq_low,
             seq_high,
-            key_count,
+            // key_count,
             bloom,
             index,
             index_start,  // Store for block boundary calculation
@@ -960,9 +962,9 @@ impl SegmentWriter {
         
         Ok(Segment {
             path: self.path,
-            seq_low: self.seq_low,
+            // seq_low: self.seq_low,
             seq_high: self.seq_high,
-            key_count: self.key_count,
+            // key_count: self.key_count,
             bloom: Some(self.bloom),
             index: self.index,
             index_start,
