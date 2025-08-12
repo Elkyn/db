@@ -23,4 +23,6 @@ Thumbs.db
 
 # Build artifacts
 antler
+antler-cli
 /tmp/
+/antler_data/
