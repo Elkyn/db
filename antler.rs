@@ -587,6 +587,320 @@ impl Store {
         (inner.segments_l0.len(), inner.segments_l1.len(), inner.segments_l2.len())
     }
     
+    pub fn get_range(&self, start: &str, end: &str) -> io::Result<Vec<(String, String)>> {
+        self.get_range_limit(start, end, usize::MAX)
+    }
+    
+    pub fn get_range_limit(&self, start: &str, end: &str, limit: usize) -> io::Result<Vec<(String, String)>> {
+        let inner = self.inner.read().unwrap();
+        let mut results = BTreeMap::new();
+        
+        // Collect from memtable
+        for (k, v) in &inner.memtable {
+            if k.as_str() >= start && k.as_str() < end {
+                match v {
+                    MemValue::Scalar(val, seq) => {
+                        if !self.covered_by_subtomb(&inner, k, *seq) {
+                            results.insert(k.clone(), (val.clone(), *seq));
+                        }
+                    }
+                    MemValue::PointTomb(seq) => {
+                        // Mark as tombstone
+                        results.insert(k.clone(), (String::new(), *seq | (1u64 << 63)));
+                    }
+                }
+            }
+        }
+        
+        // Collect from all segments
+        for segment in inner.segments_l0.iter()
+            .chain(inner.segments_l1.iter())
+            .chain(inner.segments_l2.iter())
+        {
+            self.collect_range_from_segment(segment, start, end, &mut results)?;
+        }
+        
+        // Filter out tombstones and apply limit
+        let mut final_results = Vec::new();
+        for (key, (value, seq)) in results {
+            if seq & (1u64 << 63) == 0 {  // Not a tombstone marker
+                final_results.push((key, value));
+                if final_results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        
+        Ok(final_results)
+    }
+    
+    pub fn scan_prefix(&self, prefix: &str, limit: usize) -> io::Result<Vec<(String, String)>> {
+        // Use max char as end bound for prefix scan
+        let end = format!("{}~", prefix);  // ~ comes after most chars
+        self.get_range_limit(prefix, &end, limit)
+    }
+    
+    fn collect_range_from_segment(&self, seg: &Arc<Segment>, start: &str, end: &str, 
+                                   results: &mut BTreeMap<String, (String, u64)>) -> io::Result<()> {
+        // Find starting position in index
+        let start_idx = match seg.index.binary_search_by_key(&start.to_string(), |(k, _)| k.clone()) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),  // Include the block before start
+        };
+        
+        // Iterate through relevant index entries
+        for idx in start_idx..seg.index.len() {
+            let (block_key, offset) = &seg.index[idx];
+            
+            // Skip if we're past the end
+            if block_key.as_str() >= end {
+                break;
+            }
+            
+            // Read the block
+            let next_offset = if idx + 1 < seg.index.len() {
+                seg.index[idx + 1].1
+            } else {
+                seg.index_start
+            };
+            
+            let block_data = self.cache.get_or_load(&seg.path, *offset, (next_offset - offset) as usize)?;
+            
+            // Parse all records in block
+            let mut pos = 0;
+            while pos + 8 < block_data.len() {
+                let mut seq_bytes = [0u8; 8];
+                seq_bytes.copy_from_slice(&block_data[pos..pos + 8]);
+                let seq = u64::from_le_bytes(seq_bytes);
+                pos += 8;
+                
+                if pos >= block_data.len() {
+                    break;
+                }
+                
+                let rec_type = block_data[pos];
+                pos += 1;
+                
+                if pos + 8 > block_data.len() {
+                    break;
+                }
+                
+                let mut klen_bytes = [0u8; 4];
+                klen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                let klen = u32::from_le_bytes(klen_bytes) as usize;
+                pos += 4;
+                
+                let mut vlen_bytes = [0u8; 4];
+                vlen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                let vlen = u32::from_le_bytes(vlen_bytes) as usize;
+                pos += 4;
+                
+                if pos + klen + vlen > block_data.len() {
+                    break;
+                }
+                
+                let k = String::from_utf8_lossy(&block_data[pos..pos + klen]).to_string();
+                pos += klen;
+                
+                // Check if key is in range
+                if k.as_str() >= start && k.as_str() < end {
+                    // Don't check subtombs here - will be checked at higher level
+                    {
+                        match rec_type {
+                            RT_SET => {
+                                let v = String::from_utf8_lossy(&block_data[pos..pos + vlen]).to_string();
+                                // Only update if newer
+                                if let Some((_, existing_seq)) = results.get(&k) {
+                                    if seq > (*existing_seq & !(1u64 << 63)) {
+                                        results.insert(k, (v, seq));
+                                    }
+                                } else {
+                                    results.insert(k, (v, seq));
+                                }
+                            }
+                            RT_DEL_POINT => {
+                                // Mark as tombstone with high bit set
+                                if let Some((_, existing_seq)) = results.get(&k) {
+                                    if seq > (*existing_seq & !(1u64 << 63)) {
+                                        results.insert(k, (String::new(), seq | (1u64 << 63)));
+                                    }
+                                } else {
+                                    results.insert(k, (String::new(), seq | (1u64 << 63)));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                pos += vlen;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    // Wildcard pattern matching - supports * (zero or more chars) and ? (single char)
+    pub fn get_pattern(&self, pattern: &str) -> io::Result<Vec<(String, String)>> {
+        let inner = self.inner.read().unwrap();
+        let mut results = BTreeMap::new();
+        
+        // Check memtable
+        for (key, value) in &inner.memtable {
+            if Self::matches_pattern(key, pattern) {
+                match value {
+                    MemValue::Scalar(v, seq) => {
+                        if !self.covered_by_subtomb(&inner, key, *seq) {
+                            results.insert(key.clone(), Some(v.clone()));
+                        } else {
+                            results.insert(key.clone(), None);
+                        }
+                    }
+                    MemValue::PointTomb(_) => {
+                        results.insert(key.clone(), None);
+                    }
+                }
+            }
+        }
+        
+        // Check all segments
+        for segment in inner.segments_l0.iter()
+            .chain(inner.segments_l1.iter())
+            .chain(inner.segments_l2.iter())
+        {
+            self.collect_pattern_from_segment(segment, pattern, &mut results)?;
+        }
+        
+        // Filter out tombstones
+        Ok(results.into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .collect())
+    }
+    
+    fn collect_pattern_from_segment(&self, seg: &Arc<Segment>, pattern: &str, 
+                                     results: &mut BTreeMap<String, Option<String>>) -> io::Result<()> {
+        // Read through entire segment looking for pattern matches
+        for idx in 0..seg.index.len() {
+            let (_block_key, offset) = &seg.index[idx];
+            
+            // Read the block
+            let next_offset = if idx + 1 < seg.index.len() {
+                seg.index[idx + 1].1
+            } else {
+                seg.index_start
+            };
+            
+            let block_data = self.cache.get_or_load(&seg.path, *offset, (next_offset - offset) as usize)?;
+            
+            // Parse all records in block
+            let mut pos = 0;
+            while pos + 8 < block_data.len() {
+                let mut seq_bytes = [0u8; 8];
+                seq_bytes.copy_from_slice(&block_data[pos..pos + 8]);
+                let seq = u64::from_le_bytes(seq_bytes);
+                pos += 8;
+                
+                if pos >= block_data.len() {
+                    break;
+                }
+                
+                let rec_type = block_data[pos];
+                pos += 1;
+                
+                if pos + 8 > block_data.len() {
+                    break;
+                }
+                
+                let mut klen_bytes = [0u8; 4];
+                klen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                let klen = u32::from_le_bytes(klen_bytes) as usize;
+                pos += 4;
+                
+                let mut vlen_bytes = [0u8; 4];
+                vlen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                let vlen = u32::from_le_bytes(vlen_bytes) as usize;
+                pos += 4;
+                
+                if pos + klen + vlen > block_data.len() {
+                    break;
+                }
+                
+                let k = String::from_utf8_lossy(&block_data[pos..pos + klen]).to_string();
+                pos += klen;
+                
+                // Check if key matches pattern
+                if Self::matches_pattern(&k, pattern) && !results.contains_key(&k) {
+                    let inner = self.inner.read().unwrap();
+                    match rec_type {
+                        RT_SET => {
+                            let v = String::from_utf8_lossy(&block_data[pos..pos + vlen]).to_string();
+                            if !self.covered_by_subtomb(&inner, &k, seq) {
+                                results.insert(k, Some(v));
+                            } else {
+                                results.insert(k, None);
+                            }
+                        }
+                        RT_DEL_POINT => {
+                            results.insert(k, None);
+                        }
+                        _ => {}
+                    }
+                }
+                
+                pos += vlen;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    // Delete all keys matching a wildcard pattern
+    pub fn delete_pattern(&self, pattern: &str) -> io::Result<usize> {
+        let matches = self.get_pattern(pattern)?;
+        let count = matches.len();
+        
+        for (key, _) in matches {
+            self.delete(&key)?;
+        }
+        
+        Ok(count)
+    }
+    
+    // Helper: Check if a key matches a wildcard pattern
+    fn matches_pattern(key: &str, pattern: &str) -> bool {
+        Self::matches_pattern_recursive(key.chars().collect::<Vec<_>>().as_slice(), 
+                                         pattern.chars().collect::<Vec<_>>().as_slice())
+    }
+    
+    fn matches_pattern_recursive(key: &[char], pattern: &[char]) -> bool {
+        match (pattern.first(), key.first()) {
+            (None, None) => true,  // Both exhausted
+            (None, Some(_)) => false,  // Pattern exhausted but key has more
+            (Some('*'), _) => {
+                // * matches zero or more characters
+                // Try matching with 0 chars (skip *)
+                if Self::matches_pattern_recursive(key, &pattern[1..]) {
+                    return true;
+                }
+                // Try matching with 1+ chars (consume one char and keep *)
+                if !key.is_empty() && Self::matches_pattern_recursive(&key[1..], pattern) {
+                    return true;
+                }
+                false
+            }
+            (Some('?'), None) => false,  // ? needs exactly one char but key is empty
+            (Some('?'), Some(_)) => {
+                // ? matches exactly one character
+                Self::matches_pattern_recursive(&key[1..], &pattern[1..])
+            }
+            (Some(&p), None) => false,  // Pattern has more but key is exhausted
+            (Some(&p), Some(&k)) => {
+                // Regular character must match exactly
+                p == k && Self::matches_pattern_recursive(&key[1..], &pattern[1..])
+            }
+        }
+    }
+    
     pub fn delete_subtree(&self, prefix: &str) -> io::Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.seq += 1;

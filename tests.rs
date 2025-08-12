@@ -191,28 +191,71 @@ fn test_replace_subtree() {
 // which is planned but not yet implemented in Antler.
 
 fn test_wildcard_star_match() {
-    // let dir = test_dir("wildcard_star");
-    // let store = Store::open(std::path::Path::new(&dir)).unwrap();
+    let dir = test_dir("wildcard_star");
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
-    // store.set("users/alice/profile", "data1", false).unwrap();
-    // store.set("users/bob/profile", "data2", false).unwrap();
-    // store.set("users/charlie/settings", "data3", false).unwrap();
+    store.set("users/alice/profile", "data1", false).unwrap();
+    store.set("users/bob/profile", "data2", false).unwrap();
+    store.set("users/charlie/settings", "data3", false).unwrap();
     
-    // let results = store.get_pattern("users/*/profile").unwrap();
-    // assert_eq!(results.len(), 2);
-    // assert!(results.contains(&("users/alice/profile".to_string(), "data1".to_string())));
-    // assert!(results.contains(&("users/bob/profile".to_string(), "data2".to_string())));
+    let results = store.get_pattern("users/*/profile").unwrap();
+    assert_eq!(results.len(), 2);
     
-    // cleanup(&dir);
-    println!("Wildcard star match: SKIPPED (not implemented)");
+    // Convert to hashset for easier checking
+    let result_set: std::collections::HashSet<_> = results.into_iter().collect();
+    assert!(result_set.contains(&("users/alice/profile".to_string(), "data1".to_string())));
+    assert!(result_set.contains(&("users/bob/profile".to_string(), "data2".to_string())));
+    
+    cleanup(&dir);
 }
 
 fn test_wildcard_question_match() {
-    println!("Wildcard question match: SKIPPED (future feature)");
+    let dir = test_dir("wildcard_question");
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
+    
+    store.set("log1", "data1", false).unwrap();
+    store.set("log2", "data2", false).unwrap();
+    store.set("log3", "data3", false).unwrap();
+    store.set("logs", "data4", false).unwrap();
+    store.set("logo", "data5", false).unwrap();
+    
+    // ? matches exactly one character
+    let results = store.get_pattern("log?").unwrap();
+    assert_eq!(results.len(), 5); // log1, log2, log3, logo, logs (all 4 chars)
+    
+    let keys: Vec<String> = results.iter().map(|(k, _)| k.clone()).collect();
+    assert!(keys.contains(&"log1".to_string()));
+    assert!(keys.contains(&"log2".to_string()));
+    assert!(keys.contains(&"log3".to_string()));
+    assert!(keys.contains(&"logo".to_string()));
+    assert!(keys.contains(&"logs".to_string()));
+    
+    cleanup(&dir);
 }
 
 fn test_wildcard_delete() {
-    println!("Wildcard delete: SKIPPED (future feature)");
+    let dir = test_dir("wildcard_delete");
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
+    
+    // Setup test data
+    store.set("temp/file1.txt", "data1", false).unwrap();
+    store.set("temp/file2.txt", "data2", false).unwrap();
+    store.set("temp/file3.log", "data3", false).unwrap();
+    store.set("temp/subdir/file4.txt", "data4", false).unwrap();
+    store.set("permanent/file.txt", "keep", false).unwrap();
+    
+    // Delete all .txt files under temp/ (* matches /)
+    let count = store.delete_pattern("temp/*.txt").unwrap();
+    assert_eq!(count, 3); // file1.txt, file2.txt, and subdir/file4.txt
+    
+    // Verify deletions
+    assert_eq!(store.get("temp/file1.txt").unwrap(), None);
+    assert_eq!(store.get("temp/file2.txt").unwrap(), None);
+    assert_eq!(store.get("temp/file3.log").unwrap(), Some("data3".to_string()));
+    assert_eq!(store.get("temp/subdir/file4.txt").unwrap(), None); // Also deleted since * matches /
+    assert_eq!(store.get("permanent/file.txt").unwrap(), Some("keep".to_string()));
+    
+    cleanup(&dir);
 }
 
 // ==================== PERSISTENCE & RECOVERY ====================
@@ -584,6 +627,41 @@ fn test_group_commit_behavior() {
     cleanup(&dir);
 }
 
+fn test_range_queries() {
+    let dir = test_dir("range_queries");
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
+    
+    // Insert test data
+    for i in 0..20 {
+        store.set(&format!("key{:02}", i), &format!("value{}", i), false).unwrap();
+    }
+    store.flush().unwrap();
+    
+    // Test basic range
+    let results = store.get_range("key05", "key15").unwrap();
+    assert_eq!(results.len(), 10);
+    assert_eq!(results[0].0, "key05");
+    assert_eq!(results[9].0, "key14");
+    
+    // Test range with limit
+    let limited = store.get_range_limit("key00", "key20", 5).unwrap();
+    assert_eq!(limited.len(), 5);
+    
+    // Test prefix scan
+    store.set("users/alice/age", "30", false).unwrap();
+    store.set("users/alice/email", "alice@example.com", false).unwrap();
+    store.set("users/bob/age", "25", false).unwrap();
+    let alice_data = store.scan_prefix("users/alice/", 10).unwrap();
+    assert_eq!(alice_data.len(), 2);
+    
+    // Test with deletes
+    store.delete("key10").unwrap();
+    let range_with_delete = store.get_range("key09", "key12").unwrap();
+    assert!(!range_with_delete.iter().any(|(k, _)| k == "key10"));
+    
+    cleanup(&dir);
+}
+
 fn test_tombstone_behavior() {
     let dir = test_dir("tombstone");
     let store = Store::open(std::path::Path::new(&dir)).unwrap();
@@ -646,7 +724,11 @@ fn main() {
         ("Invalid Operations", test_invalid_operations as fn()),
         ("Compaction", test_compaction as fn()),
         ("Group Commit", test_group_commit_behavior as fn()),
+        ("Range Queries", test_range_queries as fn()),
         ("Tombstones", test_tombstone_behavior as fn()),
+        ("Wildcard Star Match", test_wildcard_star_match as fn()),
+        ("Wildcard Question Match", test_wildcard_question_match as fn()),
+        ("Wildcard Delete", test_wildcard_delete as fn()),
     ];
     
     let mut passed = 0;
