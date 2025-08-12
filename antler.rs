@@ -13,7 +13,7 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const MAGIC: &[u8] = b"ELKYN03";
 const WAL_MAGIC: &[u8] = b"WAL2";
@@ -22,19 +22,19 @@ const RT_DEL_POINT: u8 = 2;
 const RT_DEL_SUB: u8 = 3;
 const BLOCK_SIZE: usize = 4096;
 const MEMTABLE_THRESHOLD: usize = 256 * 1024;
-// Compaction is currently disabled - these will be used when implemented
-// const L0_COMPACTION_THRESHOLD: usize = 4;
-// const L1_COMPACTION_THRESHOLD: usize = 10;
+const L0_COMPACTION_THRESHOLD: usize = 4;
+const L1_COMPACTION_THRESHOLD: usize = 10;
 const CACHE_SIZE: usize = 32 * 1024 * 1024;
 const GROUP_COMMIT_MS: u64 = 10;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
     inner: Arc<RwLock<StoreInner>>,
     wal: Arc<GroupCommitWAL>,
     cache: Arc<BlockCache>,
     manifest: Arc<Mutex<Manifest>>,
+    compaction_shutdown: Arc<(Mutex<bool>, Condvar)>,
 }
 
 #[derive(Debug)]
@@ -110,11 +110,17 @@ struct BlockCache {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        // Signal shutdown to background thread
+        // Signal shutdown to background threads
         let (lock, cvar) = &*self.wal.shutdown;
         let mut shutdown = lock.lock().unwrap();
         *shutdown = true;
         cvar.notify_all();
+        
+        // Signal compaction thread shutdown
+        let (comp_lock, comp_cvar) = &*self.compaction_shutdown;
+        let mut comp_shutdown = comp_lock.lock().unwrap();
+        *comp_shutdown = true;
+        comp_cvar.notify_all();
         
         // Sync any remaining WAL entries
         let _ = self.wal.sync_now();
@@ -181,16 +187,22 @@ impl Store {
         // Replay WAL
         inner.replay_wal(&wal_path)?;
         
+        let compaction_shutdown = Arc::new((Mutex::new(false), Condvar::new()));
+        
         let store = Store {
             dir: dir.to_path_buf(),
             inner: Arc::new(RwLock::new(inner)),
             wal,
             cache: Arc::new(BlockCache::new(CACHE_SIZE)),
             manifest,
+            compaction_shutdown: compaction_shutdown.clone(),
         };
         
-        // DISABLED: Compaction thread (until properly implemented)
-        // thread::spawn(move || { ... });
+        // Start compaction thread
+        let store_clone = store.clone();
+        thread::spawn(move || {
+            store_clone.compaction_thread();
+        });
         
         Ok(store)
     }
@@ -268,7 +280,7 @@ impl Store {
         }
         
         // Check segments
-        let mut result: Option<(String, u64)> = None;
+        let mut result: Option<(Option<String>, u64)> = None;
         
         for seg in inner.segments_l0.iter()
             .chain(inner.segments_l1.iter())
@@ -280,16 +292,21 @@ impl Store {
                 }
             }
             
-            if let Some((val, seq)) = self.get_from_segment(seg, path)? {
+            if let Some((val_opt, seq)) = self.get_from_segment(seg, path)? {
                 if !self.covered_by_subtomb(&inner, path, seq) {
                     if result.is_none() || seq > result.as_ref().unwrap().1 {
-                        result = Some((val, seq));
+                        result = Some((val_opt, seq));
                     }
                 }
             }
         }
         
-        Ok(result.map(|(v, _)| v))
+        // Handle the result - None in value means tombstone
+        match result {
+            Some((Some(v), _)) => Ok(Some(v)),
+            Some((None, _)) => Ok(None), // Tombstone
+            None => Ok(None), // Not found
+        }
     }
     
     fn get_subtree(&self, inner: &std::sync::RwLockReadGuard<StoreInner>, prefix: &str) -> io::Result<Option<String>> {
@@ -360,7 +377,10 @@ impl Store {
         false
     }
     
-    fn get_from_segment(&self, seg: &Arc<Segment>, key: &str) -> io::Result<Option<(String, u64)>> {
+    fn get_from_segment(&self, seg: &Arc<Segment>, key: &str) -> io::Result<Option<(Option<String>, u64)>> {
+        // Returns Some((Some(value), seq)) for RT_SET
+        // Returns Some((None, seq)) for RT_DEL_POINT
+        // Returns None for not found
         // Binary search index
         let idx = match seg.index.binary_search_by_key(&key.to_string(), |(k, _)| k.clone()) {
             Ok(i) => i,
@@ -418,12 +438,17 @@ impl Store {
             let k = String::from_utf8_lossy(&block_data[pos..pos + klen]);
             pos += klen;
             
-            if k == key && rec_type == RT_SET {
-                if pos + vlen > block_data.len() {
-                    break;
+            if k == key {
+                if rec_type == RT_SET {
+                    if pos + vlen > block_data.len() {
+                        break;
+                    }
+                    let v = String::from_utf8_lossy(&block_data[pos..pos + vlen]);
+                    return Ok(Some((Some(v.to_string()), seq)));
+                } else if rec_type == RT_DEL_POINT {
+                    // Return tombstone marker
+                    return Ok(Some((None, seq)));
                 }
-                let v = String::from_utf8_lossy(&block_data[pos..pos + vlen]);
-                return Ok(Some((v.to_string(), seq)));
             }
             
             pos += vlen;
@@ -557,6 +582,11 @@ impl Store {
         Ok(())
     }
     
+    pub fn segment_counts(&self) -> (usize, usize, usize) {
+        let inner = self.inner.read().unwrap();
+        (inner.segments_l0.len(), inner.segments_l1.len(), inner.segments_l2.len())
+    }
+    
     pub fn delete_subtree(&self, prefix: &str) -> io::Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.seq += 1;
@@ -577,6 +607,259 @@ impl Store {
         
         inner.subtombs.insert(prefix, seq);
         Ok(())
+    }
+    
+    fn compaction_thread(&self) {
+        loop {
+            // Sleep for a bit between compaction checks
+            thread::sleep(Duration::from_secs(5));
+            
+            // Check for shutdown
+            let (lock, _cvar) = &*self.compaction_shutdown;
+            let shutdown = lock.lock().unwrap();
+            if *shutdown {
+                break;
+            }
+            drop(shutdown);
+            
+            // Check if L0 compaction is needed
+            let needs_l0_compaction = {
+                let inner = self.inner.read().unwrap();
+                inner.segments_l0.len() >= L0_COMPACTION_THRESHOLD
+            };
+            
+            if needs_l0_compaction {
+                if let Err(e) = self.compact_l0_to_l1() {
+                    // Log error but continue
+                    // eprintln!("L0 compaction error: {}", e);
+                    let _ = e; // Suppress warning
+                }
+            }
+            
+            // Check if L1 compaction is needed
+            let needs_l1_compaction = {
+                let inner = self.inner.read().unwrap();
+                inner.segments_l1.len() >= L1_COMPACTION_THRESHOLD
+            };
+            
+            if needs_l1_compaction {
+                if let Err(e) = self.compact_l1_to_l2() {
+                    // Log error but continue
+                    let _ = e; // Suppress warning
+                }
+            }
+        }
+    }
+    
+    fn compact_l0_to_l1(&self) -> io::Result<()> {
+        // Take segments to compact
+        let segments_to_compact = {
+            let mut inner = self.inner.write().unwrap();
+            if inner.segments_l0.len() < L0_COMPACTION_THRESHOLD {
+                return Ok(());
+            }
+            
+            // Take the oldest L0 segments
+            let mut to_compact = Vec::new();
+            for _ in 0..L0_COMPACTION_THRESHOLD {
+                if let Some(seg) = inner.segments_l0.first() {
+                    to_compact.push(seg.clone());
+                    inner.segments_l0.remove(0);
+                }
+            }
+            to_compact
+        };
+        
+        if segments_to_compact.is_empty() {
+            return Ok(());
+        }
+        
+        // Create new L1 segment
+        let filename = format!("l1_{:010}.seg", SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs());
+        let new_path = self.dir.join(&filename);
+        
+        // Merge segments
+        let merged_segment = self.merge_segments(&segments_to_compact, &new_path, 1)?;
+        
+        // Update state
+        {
+            let mut inner = self.inner.write().unwrap();
+            inner.segments_l1.push(Arc::new(merged_segment));
+        }
+        
+        // Update manifest
+        {
+            let mut manifest = self.manifest.lock().unwrap();
+            manifest.add_entry(ManifestEntry {
+                seq_high: segments_to_compact.iter()
+                    .map(|s| s.seq_high)
+                    .max()
+                    .unwrap_or(0),
+                level: 1,
+                filename,
+            })?;
+        }
+        
+        // Delete old segment files
+        for seg in segments_to_compact {
+            let _ = fs::remove_file(&seg.path);
+        }
+        
+        Ok(())
+    }
+    
+    fn compact_l1_to_l2(&self) -> io::Result<()> {
+        // Similar to L0->L1 but for L1->L2
+        let segments_to_compact = {
+            let mut inner = self.inner.write().unwrap();
+            if inner.segments_l1.len() < L1_COMPACTION_THRESHOLD {
+                return Ok(());
+            }
+            
+            // Take the oldest L1 segments
+            let mut to_compact = Vec::new();
+            for _ in 0..L1_COMPACTION_THRESHOLD {
+                if let Some(seg) = inner.segments_l1.first() {
+                    to_compact.push(seg.clone());
+                    inner.segments_l1.remove(0);
+                }
+            }
+            to_compact
+        };
+        
+        if segments_to_compact.is_empty() {
+            return Ok(());
+        }
+        
+        // Create new L2 segment
+        let filename = format!("l2_{:010}.seg", SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs());
+        let new_path = self.dir.join(&filename);
+        
+        // Merge segments with more aggressive tombstone removal
+        let merged_segment = self.merge_segments(&segments_to_compact, &new_path, 2)?;
+        
+        // Update state
+        {
+            let mut inner = self.inner.write().unwrap();
+            inner.segments_l2.push(Arc::new(merged_segment));
+        }
+        
+        // Update manifest
+        {
+            let mut manifest = self.manifest.lock().unwrap();
+            manifest.add_entry(ManifestEntry {
+                seq_high: segments_to_compact.iter()
+                    .map(|s| s.seq_high)
+                    .max()
+                    .unwrap_or(0),
+                level: 2,
+                filename,
+            })?;
+        }
+        
+        // Delete old segment files
+        for seg in segments_to_compact {
+            let _ = fs::remove_file(&seg.path);
+        }
+        
+        Ok(())
+    }
+    
+    fn merge_segments(&self, segments: &[Arc<Segment>], output_path: &Path, level: usize) -> io::Result<Segment> {
+        let mut writer = SegmentWriter::new(output_path)?;
+        
+        // Collect all records from segments
+        let mut all_records: BTreeMap<String, (u8, Option<String>, u64)> = BTreeMap::new();
+        
+        for segment in segments {
+            // Read all records from segment
+            for (key, offset) in &segment.index {
+                // Read block containing this key
+                let next_offset = segment.index.iter()
+                    .find(|(k, _)| k > key)
+                    .map(|(_, o)| *o)
+                    .unwrap_or(segment.index_start);
+                
+                let block_size = (next_offset - offset) as usize;
+                let mut file = File::open(&segment.path)?;
+                file.seek(SeekFrom::Start(*offset))?;
+                
+                let mut block_data = vec![0u8; block_size];
+                file.read_exact(&mut block_data)?;
+                
+                // Parse records from block
+                let mut pos = 0;
+                while pos + 8 < block_data.len() {
+                    let mut seq_bytes = [0u8; 8];
+                    seq_bytes.copy_from_slice(&block_data[pos..pos + 8]);
+                    let seq = u64::from_le_bytes(seq_bytes);
+                    pos += 8;
+                    
+                    if pos >= block_data.len() {
+                        break;
+                    }
+                    
+                    let rec_type = block_data[pos];
+                    pos += 1;
+                    
+                    if pos + 8 > block_data.len() {
+                        break;
+                    }
+                    
+                    let mut klen_bytes = [0u8; 4];
+                    klen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                    let klen = u32::from_le_bytes(klen_bytes) as usize;
+                    pos += 4;
+                    
+                    let mut vlen_bytes = [0u8; 4];
+                    vlen_bytes.copy_from_slice(&block_data[pos..pos + 4]);
+                    let vlen = u32::from_le_bytes(vlen_bytes) as usize;
+                    pos += 4;
+                    
+                    if pos + klen + vlen > block_data.len() {
+                        break;
+                    }
+                    
+                    let k = String::from_utf8_lossy(&block_data[pos..pos + klen]).to_string();
+                    pos += klen;
+                    
+                    let value = if rec_type == RT_SET && vlen > 0 {
+                        Some(String::from_utf8_lossy(&block_data[pos..pos + vlen]).to_string())
+                    } else {
+                        None
+                    };
+                    pos += vlen;
+                    
+                    // Keep only the newest version of each key
+                    if let Some(existing) = all_records.get(&k) {
+                        if seq > existing.2 {
+                            all_records.insert(k, (rec_type, value, seq));
+                        }
+                    } else {
+                        all_records.insert(k, (rec_type, value, seq));
+                    }
+                }
+            }
+        }
+        
+        // Write merged records to new segment
+        for (key, (rec_type, value, seq)) in all_records {
+            // In L2, skip tombstones entirely (they've done their job)
+            if level >= 2 && rec_type != RT_SET {
+                continue;
+            }
+            
+            // In L0/L1, preserve tombstones to shadow older data
+            writer.add(rec_type, &key, value.as_deref(), seq)?;
+        }
+        
+        writer.finish()
     }
 }
 
