@@ -1,9 +1,12 @@
 // Antler Benchmark Suite
 // Performance measurements and regression tests
 
+mod antler_store {
+    include!("antler.rs");
+}
+
+use antler_store::*;
 use std::time::{Duration, Instant};
-use std::path::Path;
-use std::fs;
 use std::sync::Arc;
 use std::thread;
 
@@ -37,19 +40,19 @@ impl BenchmarkResult {
 // Helper to create temp directories
 fn bench_dir(name: &str) -> String {
     let dir = format!("/tmp/antler_bench_{}_{}", name, std::process::id());
-    let _ = fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
     dir
 }
 
 fn cleanup(dir: &str) {
-    let _ = fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 // ==================== WRITE BENCHMARKS ====================
 
 fn bench_sequential_writes() -> BenchmarkResult {
     let dir = bench_dir("seq_writes");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     let operations = 10000;
     let start = Instant::now();
@@ -68,7 +71,7 @@ fn bench_sequential_writes() -> BenchmarkResult {
 
 fn bench_random_writes() -> BenchmarkResult {
     let dir = bench_dir("rand_writes");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     let operations = 10000;
     let start = Instant::now();
@@ -89,7 +92,7 @@ fn bench_random_writes() -> BenchmarkResult {
 
 fn bench_batch_writes() -> BenchmarkResult {
     let dir = bench_dir("batch_writes");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     let operations = 10000;
     let start = Instant::now();
@@ -112,7 +115,7 @@ fn bench_batch_writes() -> BenchmarkResult {
 
 fn bench_large_values() -> BenchmarkResult {
     let dir = bench_dir("large_values");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     let operations = 1000;
     let large_value = "x".repeat(10000); // 10KB values
@@ -134,7 +137,7 @@ fn bench_large_values() -> BenchmarkResult {
 
 fn bench_sequential_reads() -> BenchmarkResult {
     let dir = bench_dir("seq_reads");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Prepare data
     let operations = 10000;
@@ -157,7 +160,7 @@ fn bench_sequential_reads() -> BenchmarkResult {
 
 fn bench_random_reads() -> BenchmarkResult {
     let dir = bench_dir("rand_reads");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Prepare data
     let operations = 10000;
@@ -181,7 +184,7 @@ fn bench_random_reads() -> BenchmarkResult {
 
 fn bench_cache_hit_rate() -> BenchmarkResult {
     let dir = bench_dir("cache_hits");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Prepare small dataset that fits in cache
     for i in 0..100 {
@@ -205,7 +208,7 @@ fn bench_cache_hit_rate() -> BenchmarkResult {
 
 fn bench_miss_reads() -> BenchmarkResult {
     let dir = bench_dir("miss_reads");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Prepare sparse data
     for i in 0..1000 {
@@ -237,7 +240,7 @@ fn bench_miss_reads() -> BenchmarkResult {
 
 fn bench_subtree_operations() -> BenchmarkResult {
     let dir = bench_dir("subtree");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Create tree structure
     for user in 0..100 {
@@ -264,7 +267,7 @@ fn bench_subtree_operations() -> BenchmarkResult {
 
 fn bench_subtree_deletes() -> BenchmarkResult {
     let dir = bench_dir("subtree_del");
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     
     // Create tree structure
     for batch in 0..100 {
@@ -294,7 +297,7 @@ fn bench_subtree_deletes() -> BenchmarkResult {
 
 fn bench_concurrent_writes() -> BenchmarkResult {
     let dir = bench_dir("concurrent_writes");
-    let store = Arc::new(Store::open(Path::new(&dir)).unwrap());
+    let store = Arc::new(Store::open(std::path::Path::new(&dir)).unwrap());
     
     let threads = 8;
     let ops_per_thread = 1000;
@@ -328,7 +331,7 @@ fn bench_concurrent_writes() -> BenchmarkResult {
 
 fn bench_concurrent_reads() -> BenchmarkResult {
     let dir = bench_dir("concurrent_reads");
-    let store = Arc::new(Store::open(Path::new(&dir)).unwrap());
+    let store = Arc::new(Store::open(std::path::Path::new(&dir)).unwrap());
     
     // Prepare data
     for i in 0..1000 {
@@ -371,7 +374,7 @@ fn bench_wal_replay() -> BenchmarkResult {
     
     // Write data without flushing
     {
-        let store = Store::open(Path::new(&dir)).unwrap();
+        let store = Store::open(std::path::Path::new(&dir)).unwrap();
         for i in 0..1000 {
             store.set(&format!("wal{}", i), "value", false).unwrap();
         }
@@ -380,7 +383,7 @@ fn bench_wal_replay() -> BenchmarkResult {
     
     // Measure recovery time
     let start = Instant::now();
-    let store = Store::open(Path::new(&dir)).unwrap();
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
     let duration = start.elapsed();
     
     // Verify data recovered
@@ -399,7 +402,7 @@ fn bench_segment_loading() -> BenchmarkResult {
     
     // Create multiple segments
     {
-        let store = Store::open(Path::new(&dir)).unwrap();
+        let store = Store::open(std::path::Path::new(&dir)).unwrap();
         for batch in 0..10 {
             for i in 0..1000 {
                 store.set(&format!("seg{}/key{}", batch, i), "value", false).unwrap();
@@ -410,7 +413,7 @@ fn bench_segment_loading() -> BenchmarkResult {
     
     // Measure startup time with segments
     let start = Instant::now();
-    let _store = Store::open(Path::new(&dir)).unwrap();
+    let _store = Store::open(std::path::Path::new(&dir)).unwrap();
     let duration = start.elapsed();
     
     cleanup(&dir);
@@ -423,7 +426,7 @@ fn bench_segment_loading() -> BenchmarkResult {
 
 fn bench_stress_test() -> BenchmarkResult {
     let dir = bench_dir("stress");
-    let store = Arc::new(Store::open(Path::new(&dir)).unwrap());
+    let store = Arc::new(Store::open(std::path::Path::new(&dir)).unwrap());
     
     let operations = 50000;
     let start = Instant::now();
@@ -483,12 +486,18 @@ fn format_duration(d: Duration) -> String {
 }
 
 fn print_result(result: &BenchmarkResult) {
+    let notes = if result.notes.is_empty() { 
+        String::new() 
+    } else { 
+        format!("({})", result.notes) 
+    };
+    
     println!("  {:30} {:>10} ops in {:>8} = {:>12.0} ops/sec {}",
         result.name,
         result.operations,
         format_duration(result.duration),
         result.ops_per_sec,
-        if result.notes.is_empty() { "" } else { &format!("({})", result.notes) }
+        notes
     );
 }
 
@@ -623,6 +632,3 @@ fn main() {
         println!("\n✅ All performance targets met!");
     }
 }
-
-// Import the Store implementation
-include!("antler.rs");

@@ -28,7 +28,7 @@ const CACHE_SIZE: usize = 32 * 1024 * 1024;
 const GROUP_COMMIT_MS: u64 = 10;
 
 #[derive(Debug)]
-struct Store {
+pub struct Store {
     dir: PathBuf,
     inner: Arc<RwLock<StoreInner>>,
     wal: Arc<GroupCommitWAL>,
@@ -107,8 +107,21 @@ struct BlockCache {
     max_size: usize,
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Signal shutdown to background thread
+        let (lock, cvar) = &*self.wal.shutdown;
+        let mut shutdown = lock.lock().unwrap();
+        *shutdown = true;
+        cvar.notify_all();
+        
+        // Sync any remaining WAL entries
+        let _ = self.wal.sync_now();
+    }
+}
+
 impl Store {
-    fn open(dir: &Path) -> io::Result<Self> {
+    pub fn open(dir: &Path) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         
         let wal_path = dir.join("wal.log");
@@ -182,7 +195,7 @@ impl Store {
         Ok(store)
     }
     
-    fn set(&self, path: &str, value: &str, replace_subtree: bool) -> io::Result<()> {
+    pub fn set(&self, path: &str, value: &str, replace_subtree: bool) -> io::Result<()> {
         // Check parent isn't a scalar (tree semantics)
         if let Some(parent) = parent_path(path) {
             if self.get(&parent)?.is_some() {
@@ -236,7 +249,7 @@ impl Store {
         Ok(())
     }
     
-    fn get(&self, path: &str) -> io::Result<Option<String>> {
+    pub fn get(&self, path: &str) -> io::Result<Option<String>> {
         let inner = self.inner.read().unwrap();
         
         // Check if this is a subtree query
@@ -521,14 +534,14 @@ impl Store {
         Ok(())
     }
     
-    fn flush(&self) -> io::Result<()> {
+    pub fn flush(&self) -> io::Result<()> {
         let mut inner = self.inner.write().unwrap();
         self.flush_memtable_locked(&mut inner)?;
         self.wal.sync_now()?;
         Ok(())
     }
     
-    fn delete(&self, path: &str) -> io::Result<()> {
+    pub fn delete(&self, path: &str) -> io::Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.seq += 1;
         let seq = inner.seq;
@@ -544,7 +557,7 @@ impl Store {
         Ok(())
     }
     
-    fn delete_subtree(&self, prefix: &str) -> io::Result<()> {
+    pub fn delete_subtree(&self, prefix: &str) -> io::Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.seq += 1;
         let seq = inner.seq;
