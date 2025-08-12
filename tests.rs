@@ -523,6 +523,50 @@ fn test_invalid_operations() {
 
 // ==================== ADVANCED FEATURES ====================
 
+fn test_compaction() {
+    let dir = test_dir("compaction");
+    let store = Store::open(std::path::Path::new(&dir)).unwrap();
+    
+    // Create multiple L0 segments
+    for batch in 0..5 {
+        for i in 0..50 {
+            store.set(&format!("batch{}/key{:03}", batch, i), "value", false).unwrap();
+        }
+        store.flush().unwrap();
+    }
+    
+    // Check initial state
+    let (l0_before, l1_before, _) = store.segment_counts();
+    assert_eq!(l0_before, 5, "Should have 5 L0 segments");
+    assert_eq!(l1_before, 0, "Should have 0 L1 segments");
+    
+    // Wait for compaction
+    thread::sleep(Duration::from_secs(6));
+    
+    // Check after compaction
+    let (l0_after, l1_after, _) = store.segment_counts();
+    assert!(l0_after < l0_before, "L0 segments should decrease");
+    assert!(l1_after > l1_before, "L1 segments should increase");
+    
+    // Verify data integrity
+    assert_eq!(store.get("batch0/key000").unwrap(), Some("value".to_string()));
+    assert_eq!(store.get("batch4/key049").unwrap(), Some("value".to_string()));
+    
+    // Test tombstone handling
+    store.set("test_key", "value1", false).unwrap();
+    store.flush().unwrap();
+    store.delete("test_key").unwrap();
+    store.flush().unwrap();
+    
+    // Wait for potential compaction
+    thread::sleep(Duration::from_secs(6));
+    
+    // Tombstone should still be effective
+    assert_eq!(store.get("test_key").unwrap(), None);
+    
+    cleanup(&dir);
+}
+
 fn test_group_commit_behavior() {
     let dir = test_dir("group_commit");
     let store = Store::open(std::path::Path::new(&dir)).unwrap();
@@ -600,6 +644,7 @@ fn main() {
         ("Concurrent Reads", test_concurrent_reads as fn()),
         ("Concurrent Read/Write", test_concurrent_read_write as fn()),
         ("Invalid Operations", test_invalid_operations as fn()),
+        ("Compaction", test_compaction as fn()),
         ("Group Commit", test_group_commit_behavior as fn()),
         ("Tombstones", test_tombstone_behavior as fn()),
     ];
